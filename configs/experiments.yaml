@@ -1,0 +1,141 @@
+# =============================================================================
+# Parameterized Limited-Label Fine-Tuning, Ablation & Robustness Configuration
+# Supports 4 Label Regimes (10%, 25%, 50%, 100%) and 5 Modular Ablation Variants:
+#   A. Supervised Baseline (supervised)
+#   B. SSL Pretrained Fine-Tuning (ssl_finetune)
+#   C. SSL + Motion Consistency (ssl_motion)
+#   D. SSL + Confidence Pseudo-Labeling (ssl_pseudo)
+#   E. Full Proposed Pipeline (full_pipeline / ssl_motion_pseudo)
+# =============================================================================
+
+project:
+  name: "motion_guided_ssl_experiments"
+  seed: 42
+  device: "auto"  # 'auto' automatically selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  subsets:
+    10: "data/splits/labeled_10.txt"    # 7 patients (10%)
+    25: "data/splits/labeled_25.txt"    # 17 patients (25%)
+    50: "data/splits/labeled_50.txt"    # 35 patients (50%)
+    100: "data/splits/labeled_100.txt"  # 70 patients (100%)
+  val_split: "data/splits/val_patients.txt"    # 10 patients
+  test_split: "data/splits/test_patients.txt"  # 20 patients
+  image_size: [256, 256]
+  num_classes: 4  # 0: Background, 1: LV cavity, 2: Myocardium, 3: RV cavity
+  num_workers: 0
+
+model:
+  architecture: "2d_unet"
+  in_channels: 1
+  num_classes: 4
+  encoder_channels: [32, 64, 128, 256]
+  dropout: 0.1
+  use_residual: true
+
+# -----------------------------------------------------------------------------
+# 5 Modular Ablation Variants
+# -----------------------------------------------------------------------------
+variants:
+  supervised:
+    name: "A. Supervised Baseline"
+    description: "Fully supervised 2D U-Net baseline from random initialization"
+    use_ssl_pretrained: false
+    use_motion: false
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 0
+
+  ssl_finetune:
+    name: "B. SSL Only"
+    description: "2D U-Net with SSL-pretrained SharedEncoder weights"
+    use_ssl_pretrained: true
+    ssl_checkpoint: "checkpoints/ssl/ssl_encoder_best.pth"
+    use_motion: false
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 5  # Warmup decoder before updating encoder
+
+  ssl_motion:
+    name: "C. SSL + Motion"
+    description: "SSL fine-tuning regularized with motion-guided temporal consistency"
+    use_ssl_pretrained: true
+    ssl_checkpoint: "checkpoints/ssl/ssl_encoder_best.pth"
+    use_motion: true
+    motion_checkpoint: "checkpoints/motion/motion_model_best.pth"
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 5
+
+  ssl_pseudo:
+    name: "D. SSL + Pseudo-Labels"
+    description: "SSL fine-tuning with confidence-filtered pseudo-labels (no motion)"
+    use_ssl_pretrained: true
+    ssl_checkpoint: "checkpoints/ssl/ssl_encoder_best.pth"
+    use_motion: false
+    use_pseudo_labels: true
+    pseudo_label_config: "configs/pseudo_labels.yaml"
+    freeze_encoder_epochs: 5
+
+  full_pipeline:
+    name: "E. Full Pipeline"
+    description: "Full proposed framework: SSL + Motion Regularization + Confidence-Filtered Pseudo-Labels"
+    use_ssl_pretrained: true
+    ssl_checkpoint: "checkpoints/ssl/ssl_encoder_best.pth"
+    use_motion: true
+    motion_checkpoint: "checkpoints/motion/motion_model_best.pth"
+    use_pseudo_labels: true
+    pseudo_label_config: "configs/pseudo_labels.yaml"
+    freeze_encoder_epochs: 5
+
+  # Alias for backward compatibility
+  ssl_motion_pseudo:
+    name: "E. Full Pipeline"
+    description: "Full proposed framework: SSL + Motion + Pseudo-Labels"
+    use_ssl_pretrained: true
+    ssl_checkpoint: "checkpoints/ssl/ssl_encoder_best.pth"
+    use_motion: true
+    motion_checkpoint: "checkpoints/motion/motion_model_best.pth"
+    use_pseudo_labels: true
+    pseudo_label_config: "configs/pseudo_labels.yaml"
+    freeze_encoder_epochs: 5
+
+# -----------------------------------------------------------------------------
+# Loss Weight Formulations
+# -----------------------------------------------------------------------------
+loss:
+  dice_weight: 1.0        # lambda_dice for supervised Dice loss
+  ce_weight: 1.0          # lambda_ce for supervised Cross-Entropy loss
+  motion_weight: 0.1      # lambda_motion for motion-warped consistency
+  pseudo_weight: 0.25     # lambda_pseudo for confident pseudo-labels
+  include_background: false # Exclude background class 0 from Dice loss
+
+# -----------------------------------------------------------------------------
+# Optimization & Fine-Tuning Hyperparameters
+# -----------------------------------------------------------------------------
+optimization:
+  optimizer: "adamw"
+  lr_decoder: 1.0e-4      # Learning rate for segmentation decoder
+  lr_encoder: 1.0e-5      # Slower learning rate for pretrained encoder
+  weight_decay: 1.0e-5
+  scheduler: "cosine"
+  epochs: 200
+  early_stopping_patience: 30
+  batch_size: 8
+  mixed_precision: true
+
+# -----------------------------------------------------------------------------
+# Robustness Evaluation Settings
+# -----------------------------------------------------------------------------
+robustness:
+  seeds: [42, 123, 456]
+  noise_levels: [0.0, 0.05, 0.10]          # Additive Gaussian noise std
+  intensity_scalings: [0.9, 1.0, 1.1]      # Global intensity multiplicative scaling
+  temporal_intervals: [1, 2]               # Adjacent frame delta (t to t+1 vs t to t+2)
+
+logging:
+  checkpoint_dir: "checkpoints/experiments"
+  results_dir: "results/experiments"
+  tables_dir: "results/tables"
+  metrics_dir: "results/metrics"
+  figures_dir: "results/figures"
+  registry_file: "results/experiments/experiment_registry.json"

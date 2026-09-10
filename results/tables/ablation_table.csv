@@ -1,0 +1,6 @@
+Model Variant,Label Fraction,LV Dice,MYO Dice,RV Dice,Mean Dice,HD95 (mm),Temporal Consistency,Pseudo Acceptance Rate (%),Pseudo Dice
+A. Supervised Baseline,100%,,,,,,,,
+B. SSL Only,100%,,,,,,,,
+C. SSL + Motion,100%,,,,,,,,
+D. SSL + Pseudo-Labels,100%,,,,,,,,
+E. Full Pipeline,100%,,,,,,,,

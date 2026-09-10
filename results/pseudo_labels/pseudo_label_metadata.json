@@ -1,0 +1,26 @@
+{
+  "config": {
+    "confidence_metric": "max_probability",
+    "confidence_threshold": 0.9,
+    "entropy_threshold": 0.25,
+    "use_temporal_consistency": true,
+    "temporal_consistency_threshold": 0.8,
+    "min_foreground_pixels": 30,
+    "ignore_index": -1
+  },
+  "metrics": {
+    "acceptance_rate": 0.00466156005859375,
+    "fg_acceptance_rate": 0.0046795523906408955,
+    "accuracy_on_accepted": 0.23895253682487724,
+    "raw_accuracy": 0.24976348876953125,
+    "mean_fg_dice": 0.0022266944654524405,
+    "dice_lv": 0.0020734235882424686,
+    "dice_myo": 0.0026596548493365976,
+    "dice_rv": 0.0019470049587782543,
+    "confidence_mean": 0.5174130797386169,
+    "confidence_median": 0.4932469129562378,
+    "confidence_accepted_mean": 0.9231994152069092,
+    "confidence_gt_fg_mean": 0.5177164077758789
+  },
+  "samples_evaluated": 2
+}

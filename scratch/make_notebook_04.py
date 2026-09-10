@@ -1,0 +1,346 @@
+import json
+from pathlib import Path
+
+nb = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# Motion-Guided Self-Supervised Learning for Cardiac Cine MRI\n",
+                "## Notebook 04: Self-Supervised Temporal Pretraining\n",
+                "\n",
+                "This notebook provides a complete demonstration and interactive inspection of the **Self-Supervised Temporal Representation-Learning Pipeline**.\n",
+                "\n",
+                "### Pretraining Objectives:\n",
+                "1. **Masked Image Reconstruction**: Divides cine slices into non-overlapping patches (e.g. 16x16), randomly masks 50% of them, and trains the shared encoder + reconstruction decoder to predict missing cardiac anatomy.\n",
+                "2. **Adjacent-Frame Temporal Feature Consistency**: Exploits natural cardiac cycle continuity by pairing temporally adjacent frames $(t, t+1)$ from the same patient and slice position, penalizing divergence in the projected embedding space.\n",
+                "\n",
+                "> **COMPUTE CONSTRAINT NOTE**:\n",
+                "> Per project guidelines, full multi-epoch SSL pretraining is executed on a dedicated GPU training server (`TRAINING MACHINE ONLY`).\n",
+                "> This notebook runs a lightweight CPU demonstration without executing expensive training loops."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import os\n",
+                "import sys\n",
+                "from pathlib import Path\n",
+                "\n",
+                "# Ensure project root is in sys.path\n",
+                "project_root = Path.cwd().resolve()\n",
+                "if project_root.name == 'notebooks':\n",
+                "    project_root = project_root.parent\n",
+                "if str(project_root) not in sys.path:\n",
+                "    sys.path.insert(0, str(project_root))\n",
+                "\n",
+                "import yaml\n",
+                "import numpy as np\n",
+                "import matplotlib.pyplot as plt\n",
+                "import torch\n",
+                "import torch.nn.functional as F\n",
+                "\n",
+                "from src.ssl import SSLModel, PatchMasker, ReconstructionDecoder, compute_ssl_loss, count_parameters\n",
+                "from src.dataset import ACDCTemporalDataset\n",
+                "\n",
+                "print(f\"Project root: {project_root}\")\n",
+                "print(f\"PyTorch version: {torch.__version__}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 1. Load Pretraining Configuration\n",
+                "We inspect the dedicated `configs/ssl.yaml` configuration file."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "config_path = project_root / \"configs\" / \"ssl.yaml\"\n",
+                "with open(config_path, \"r\") as f:\n",
+                "    config = yaml.safe_load(f)\n",
+                "\n",
+                "print(\"SSL Configuration:\")\n",
+                "print(f\"  Encoder channels:   {config['model']['encoder_channels']}\")\n",
+                "print(f\"  Projection dim:     {config['model']['proj_dim']}\")\n",
+                "print(f\"  Mask patch size:    {config['model']['mask_patch_size']} x {config['model']['mask_patch_size']}\")\n",
+                "print(f\"  Mask ratio:         {config['model']['mask_ratio'] * 100:.0f}%\")\n",
+                "print(f\"  Recon weight:       {config['loss']['recon_weight']}\")\n",
+                "print(f\"  Temporal weight:    {config['loss']['temporal_weight']}\")\n",
+                "print(f\"  Checkpoints target: {config['logging']['checkpoint_dir']}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 2. Temporal Dataset: Strict Adjacent Frame Pairing $(t, t+1)$\n",
+                "The `ACDCTemporalDataset` indexes all cine slices across time and couples frames $(t, t+1)$ from the **exact same patient and slice position**.\n",
+                "Frames are never paired across different patients, ensuring clean cardiac contraction/relaxation kinetics."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "train_split = project_root / config['data']['train_split']\n",
+                "processed_dir = project_root / config['data']['processed_dir']\n",
+                "\n",
+                "dataset = ACDCTemporalDataset(\n",
+                "    processed_dir=str(processed_dir),\n",
+                "    split_file=str(train_split),\n",
+                ")\n",
+                "\n",
+                "print(f\"Total training adjacent cine pairs: {len(dataset):,}\")\n",
+                "\n",
+                "# Inspect a random pair\n",
+                "sample = dataset[100]\n",
+                "print(f\"Sample Patient:   {sample['patient_id']}\")\n",
+                "print(f\"Slice Index:      {sample['slice_idx']}\")\n",
+                "print(f\"Frame t:          {sample['frame_idx_t']}\")\n",
+                "print(f\"Frame t+1:        {sample['frame_idx_t1']}\")\n",
+                "print(f\"Tensor shape:     {sample['frame_t'].shape}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 3. Visualizing Adjacent Cardiac Cine Frames and Motion Difference\n",
+                "Below we visualize frame $t$, frame $t+1$, and their absolute intensity difference $|x_{t+1} - x_t|$ which highlights myocardial displacement."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "img_t = sample['frame_t'].squeeze().numpy()\n",
+                "img_t1 = sample['frame_t1'].squeeze().numpy()\n",
+                "diff = np.abs(img_t1 - img_t)\n",
+                "\n",
+                "fig, axes = plt.subplots(1, 3, figsize=(15, 5))\n",
+                "axes[0].imshow(img_t, cmap='gray')\n",
+                "axes[0].set_title(f\"Frame t (Index {sample['frame_idx_t']})\")\n",
+                "axes[0].axis('off')\n",
+                "\n",
+                "axes[1].imshow(img_t1, cmap='gray')\n",
+                "axes[1].set_title(f\"Frame t+1 (Index {sample['frame_idx_t1']})\")\n",
+                "axes[1].axis('off')\n",
+                "\n",
+                "im = axes[2].imshow(diff, cmap='inferno')\n",
+                "axes[2].set_title(\"Absolute Difference |t+1 - t| (Motion)\")\n",
+                "axes[2].axis('off')\n",
+                "plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 4. Visualizing Patch Masking\n",
+                "The `PatchMasker` divides the $256 \\times 256$ image into non-overlapping $16 \\times 16$ patches (a $16 \\times 16$ grid $= 256$ patches in total). Exactly 50% ($128$ patches) are masked out with zero intensity."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "masker = PatchMasker(patch_size=16, mask_ratio=0.50)\n",
+                "x = sample['frame_t'].unsqueeze(0)  # (1, 1, 256, 256)\n",
+                "masked_x, mask = masker(x)\n",
+                "\n",
+                "orig_np = x.squeeze().numpy()\n",
+                "mask_np = mask.squeeze().numpy()\n",
+                "masked_np = masked_x.squeeze().numpy()\n",
+                "\n",
+                "fig, axes = plt.subplots(1, 3, figsize=(15, 5))\n",
+                "axes[0].imshow(orig_np, cmap='gray')\n",
+                "axes[0].set_title(\"Original Cine Slice (t)\")\n",
+                "axes[0].axis('off')\n",
+                "\n",
+                "axes[1].imshow(mask_np, cmap='Reds', alpha=0.8)\n",
+                "axes[1].set_title(f\"Binary Patch Mask (Ratio: {mask_np.mean()*100:.1f}%)\")\n",
+                "axes[1].axis('off')\n",
+                "\n",
+                "axes[2].imshow(masked_np, cmap='gray')\n",
+                "axes[2].set_title(\"Masked Input to Encoder\")\n",
+                "axes[2].axis('off')\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 5. SSL Model Architecture & Forward Pass\n",
+                "We instantiate the `SSLModel` on CPU and verify parameter counts."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "model = SSLModel(\n",
+                "    in_channels=1,\n",
+                "    encoder_channels=[32, 64, 128, 256],\n",
+                "    proj_dim=128,\n",
+                "    mask_patch_size=16,\n",
+                "    mask_ratio=0.50,\n",
+                "    dropout=0.1,\n",
+                "    use_residual=True,\n",
+                ")\n",
+                "model.eval()\n",
+                "\n",
+                "tot_p = count_parameters(model)\n",
+                "enc_p = count_parameters(model.encoder)\n",
+                "dec_p = count_parameters(model.recon_decoder)\n",
+                "proj_p = count_parameters(model.projection)\n",
+                "\n",
+                "print(f\"Total Trainable Parameters:    {tot_p:,}\")\n",
+                "print(f\"Shared Encoder (transferable): {enc_p:,} ({enc_p/tot_p*100:.1f}%)\")\n",
+                "print(f\"Reconstruction Decoder:        {dec_p:,} ({dec_p/tot_p*100:.1f}%)\")\n",
+                "print(f\"Projection Head (temporal):    {proj_p:,} ({proj_p/tot_p*100:.1f}%)\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 6. Masked Reconstruction Visualization\n",
+                "We execute a single forward pass and visualize the original frame, the masked frame, and the reconstructed frame (from initial un-trained weights, showing the operational forward flow)."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "x_t = sample['frame_t'].unsqueeze(0)\n",
+                "x_t1 = sample['frame_t1'].unsqueeze(0)\n",
+                "\n",
+                "with torch.no_grad():\n",
+                "    results = model(x_t, x_t1)\n",
+                "\n",
+                "recon_np = results['reconstructed'].squeeze().numpy()\n",
+                "\n",
+                "fig, axes = plt.subplots(1, 3, figsize=(15, 5))\n",
+                "axes[0].imshow(orig_np, cmap='gray')\n",
+                "axes[0].set_title(\"Original Slice (Target)\")\n",
+                "axes[0].axis('off')\n",
+                "\n",
+                "axes[1].imshow(masked_np, cmap='gray')\n",
+                "axes[1].set_title(\"Masked Slice (Input)\")\n",
+                "axes[1].axis('off')\n",
+                "\n",
+                "axes[2].imshow(recon_np, cmap='gray')\n",
+                "axes[2].set_title(\"Decoder Output (Reconstruction)\")\n",
+                "axes[2].axis('off')\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 7. Temporal Embedding Consistency & Loss Formulation\n",
+                "The projection head projects bottleneck representations to unit sphere vectors $z_t, z_{t+1} \\in \\mathbb{R}^{128}$:\n",
+                "$$\\mathcal{L}_{\\text{temporal}} = \\| z_t - z_{t+1} \\|_2^2 = 2 - 2 \\cos(z_t, z_{t+1})$$\n",
+                "$$\\mathcal{L}_{\\text{ssl}} = \\lambda_{\\text{recon}} \\mathcal{L}_{\\text{recon}} + \\lambda_{\\text{temporal}} \\mathcal{L}_{\\text{temporal}}$$"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "z_t = results['proj_t']\n",
+                "z_t1 = results['proj_t1']\n",
+                "\n",
+                "norm_t = torch.norm(z_t, dim=-1).item()\n",
+                "norm_t1 = torch.norm(z_t1, dim=-1).item()\n",
+                "cos_sim = F.cosine_similarity(z_t, z_t1, dim=-1).item()\n",
+                "\n",
+                "print(f\"Embedding shape:          {z_t.shape}\")\n",
+                "print(f\"L2 norm z_t:              {norm_t:.4f} (unit sphere)\")\n",
+                "print(f\"L2 norm z_t+1:            {norm_t1:.4f} (unit sphere)\")\n",
+                "print(f\"Cosine similarity (t,t+1): {cos_sim:.4f}\")\n",
+                "\n",
+                "recon_loss, temp_loss, total_loss = compute_ssl_loss(\n",
+                "    results,\n",
+                "    recon_weight=1.0,\n",
+                "    temporal_weight=0.1,\n",
+                "    recon_loss_type=\"l1\"\n",
+                ")\n",
+                "\n",
+                "print(f\"\\nCalculated SSL Losses:\")\n",
+                "print(f\"  Reconstruction Loss (L1): {recon_loss.item():.4f}\")\n",
+                "print(f\"  Temporal Consistency:     {temp_loss.item():.4f}\")\n",
+                "print(f\"  Total Weighted SSL Loss:  {total_loss.item():.4f}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 8. Full Training on GPU System (`TRAINING MACHINE ONLY`)\n",
+                "\n",
+                "To execute full SSL pretraining (100 epochs, AdamW, cosine annealing, mixed precision) on the dedicated training server, run:\n",
+                "\n",
+                "```bash\n",
+                "# ========================================================\n",
+                "# TRAINING MACHINE ONLY (DO NOT RUN ON DEV SYSTEM)\n",
+                "# ========================================================\n",
+                "python src/ssl.py --config configs/ssl.yaml --device cuda\n",
+                "```\n",
+                "\n",
+                "Checkpoints will automatically be saved to:\n",
+                "- `checkpoints/ssl/ssl_checkpoint_epoch{N}.pth` (periodic full state)\n",
+                "- `checkpoints/ssl/ssl_best.pth` (lowest SSL loss full state)\n",
+                "- `checkpoints/ssl/ssl_encoder_best.pth` (standalone encoder weights for downstream segmentation)"
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.11.9"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 4
+}
+
+out_path = Path("notebooks/04_self_supervised_pretraining.ipynb")
+out_path.parent.mkdir(parents=True, exist_ok=True)
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(nb, f, indent=2)
+
+print(f"Successfully generated {out_path}")

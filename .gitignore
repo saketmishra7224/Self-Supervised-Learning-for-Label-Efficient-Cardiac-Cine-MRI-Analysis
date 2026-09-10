@@ -1,0 +1,27 @@
+# Large raw and processed datasets
+data/raw/*
+!data/raw/README.md
+!data/raw/dataset_download_metadata.json
+data/processed/*
+!data/processed/.gitkeep
+
+# Checkpoints and model weights
+checkpoints/*
+!checkpoints/.gitkeep
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.ipynb_checkpoints/
+
+# System and editor files
+.DS_Store
+Thumbs.db
+*.log

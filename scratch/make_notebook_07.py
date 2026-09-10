@@ -1,0 +1,337 @@
+import json
+from pathlib import Path
+
+nb = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# Motion-Guided Self-Supervised Learning for Cardiac Cine MRI\n",
+                "## Notebook 07: Limited-Label Fine-Tuning & Label-Efficiency Experiments\n",
+                "\n",
+                "This notebook provides a comprehensive walkthrough of the **Limited-Label Fine-Tuning and Evaluation Pipeline**.\n",
+                "\n",
+                "### Experimental Matrix (16 Configurations):\n",
+                "- **4 Annotation Regimes (Patient-Level)**:\n",
+                "  - **10% Labels**: 7 patients (128 slices)\n",
+                "  - **25% Labels**: 17 patients (318 slices)\n",
+                "  - **50% Labels**: 35 patients (660 slices)\n",
+                "  - **100% Labels**: 70 patients (1,324 slices)\n",
+                "- **4 Modular Model Variants**:\n",
+                "  - **Variant A (supervised)**: 2D U-Net baseline initialized from scratch\n",
+                "  - **Variant B (ssl_finetune)**: 2D U-Net initialized with SSL pretrained SharedEncoder\n",
+                "  - **Variant C (ssl_motion)**: Pretrained U-Net regularized with motion consistency\n",
+                "  - **Variant D (ssl_motion_pseudo)**: Progressive framework with confidence-filtered pseudo-labels\n",
+                "\n",
+                "> **COMPUTE CONSTRAINT NOTE**:\n",
+                "> Per project requirements, actual multi-epoch experiments are run on a dedicated GPU training server (`TRAINING MACHINE ONLY`).\n",
+                "> This notebook validates subset integrity, model instantiation, multi-component losses, and experiment tracking on CPU."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import os\n",
+                "import sys\n",
+                "from pathlib import Path\n",
+                "\n",
+                "# Ensure project root is in sys.path\n",
+                "project_root = Path.cwd().resolve()\n",
+                "if project_root.name == 'notebooks':\n",
+                "    project_root = project_root.parent\n",
+                "if str(project_root) not in sys.path:\n",
+                "    sys.path.insert(0, str(project_root))\n",
+                "\n",
+                "import yaml\n",
+                "import numpy as np\n",
+                "import matplotlib.pyplot as plt\n",
+                "import torch\n",
+                "import torch.nn.functional as F\n",
+                "\n",
+                "from src.segmentation_model import SegmentationUNet\n",
+                "from src.encoder import load_encoder_weights, count_parameters\n",
+                "from src.motion import MotionEstimator\n",
+                "from src.dataset import ACDCSegDataset, ACDCTemporalDataset\n",
+                "from src.experiment_runner import build_experiment_model, ExperimentLossManager, ExperimentRegistry\n",
+                "\n",
+                "print(f\"Project root: {project_root}\")\n",
+                "print(f\"PyTorch version: {torch.__version__}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 1. Patient-Level Split Verification & Strict Nesting\n",
+                "The project enforces patient-level sampling with seed 42 to prevent slice leakage across training, validation, and testing.\n",
+                "Subsets are strictly nested: $10\\% \\subset 25\\% \\subset 50\\% \\subset 100\\%$."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "splits_dir = project_root / \"data\" / \"splits\"\n",
+                "val_pts = set(open(splits_dir / \"val_patients.txt\").read().split())\n",
+                "test_pts = set(open(splits_dir / \"test_patients.txt\").read().split())\n",
+                "\n",
+                "fractions = [10, 25, 50, 100]\n",
+                "patient_subsets = {}\n",
+                "slice_counts = {}\n",
+                "\n",
+                "for pct in fractions:\n",
+                "    split_file = splits_dir / f\"labeled_{pct}.txt\"\n",
+                "    pts = [line.strip() for line in open(split_file) if line.strip() and not line.startswith('#')]\n",
+                "    patient_subsets[pct] = set(pts)\n",
+                "    \n",
+                "    # Count slices\n",
+                "    dataset = ACDCSegDataset(\n",
+                "        processed_dir=str(project_root / \"data\" / \"processed\"),\n",
+                "        split_file=str(split_file),\n",
+                "    )\n",
+                "    slice_counts[pct] = len(dataset)\n",
+                "    print(f\"Subset labeled_{pct:3d}.txt: {len(pts):2d} patients | {len(dataset):4d} labeled slices\")\n",
+                "\n",
+                "# Verify nesting\n",
+                "assert patient_subsets[10].issubset(patient_subsets[25]), \"10% not subset of 25%!\"\n",
+                "assert patient_subsets[25].issubset(patient_subsets[50]), \"25% not subset of 50%!\"\n",
+                "assert patient_subsets[50].issubset(patient_subsets[100]), \"50% not subset of 100%!\"\n",
+                "\n",
+                "# Verify zero leakage\n",
+                "for pct in fractions:\n",
+                "    assert len(patient_subsets[pct].intersection(val_pts)) == 0, f\"Leakage into validation!\"\n",
+                "    assert len(patient_subsets[pct].intersection(test_pts)) == 0, f\"Leakage into test!\"\n",
+                "\n",
+                "print(\"\\nSplit integrity checks verified: Strict patient nesting and zero cross-split leakage.\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 2. Visualizing Patient and Slice Counts Across Regimes\n",
+                "We plot the patient and slice distribution across the 4 label regimes."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))\n",
+                "\n",
+                "pct_labels = [f\"{p}%\" for p in fractions]\n",
+                "pt_counts = [len(patient_subsets[p]) for p in fractions]\n",
+                "sl_counts = [slice_counts[p] for p in fractions]\n",
+                "\n",
+                "ax1.bar(pct_labels, pt_counts, color='royalblue', alpha=0.85, edgecolor='black')\n",
+                "ax1.set_title(\"Labeled Patients per Regime\")\n",
+                "ax1.set_ylabel(\"Number of Patients\")\n",
+                "ax1.grid(axis='y', linestyle='--', alpha=0.7)\n",
+                "for i, v in enumerate(pt_counts):\n",
+                "    ax1.text(i, v + 1, f\"{v} pts\", ha='center', fontweight='bold')\n",
+                "\n",
+                "ax2.bar(pct_labels, sl_counts, color='seagreen', alpha=0.85, edgecolor='black')\n",
+                "ax2.set_title(\"Labeled Slices per Regime\")\n",
+                "ax2.set_ylabel(\"Number of 2D Slices\")\n",
+                "ax2.grid(axis='y', linestyle='--', alpha=0.7)\n",
+                "for i, v in enumerate(sl_counts):\n",
+                "    ax2.text(i, v + 25, f\"{v} slices\", ha='center', fontweight='bold')\n",
+                "\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 3. Inspecting the Parameterized Experiment Configuration\n",
+                "We load `configs/experiments.yaml` defining parameters for the 4 variants."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "config_path = project_root / \"configs\" / \"experiments.yaml\"\n",
+                "with open(config_path, \"r\") as f:\n",
+                "    config = yaml.safe_load(f)\n",
+                "\n",
+                "print(\"Configured Model Variants:\")\n",
+                "for var_name, var_info in config['variants'].items():\n",
+                "    print(f\"  - {var_name:18s}: {var_info['description']}\")\n",
+                "\n",
+                "print(f\"\\nLoss Weights:\")\n",
+                "print(f\"  Dice weight:   {config['loss']['dice_weight']}\")\n",
+                "print(f\"  CE weight:     {config['loss']['ce_weight']}\")\n",
+                "print(f\"  Motion weight: {config['loss']['motion_weight']}\")\n",
+                "print(f\"  Pseudo weight: {config['loss']['pseudo_weight']}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 4. Demonstrating Model Initialization & Pretrained Encoder Transfer\n",
+                "We instantiate `SegmentationUNet` and demonstrate loading the SSL-pretrained `SharedEncoder` weights."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "device = torch.device('cpu')\n",
+                "ssl_ckpt = project_root / \"checkpoints\" / \"ssl\" / \"ssl_encoder_best.pth\"\n",
+                "\n",
+                "model, motion_est = build_experiment_model(\n",
+                "    config=config,\n",
+                "    mode=\"ssl_motion_pseudo\",\n",
+                "    ssl_checkpoint=str(ssl_ckpt) if ssl_ckpt.exists() else None,\n",
+                "    device=device,\n",
+                ")\n",
+                "\n",
+                "print(f\"SegmentationUNet Parameters: {count_parameters(model):,}\")\n",
+                "print(f\"MotionEstimator Parameters:   {count_parameters(motion_est):,}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 5. Multi-Component Loss Demonstration\n",
+                "We demonstrate the combined loss computation:\n",
+                "$$\\mathcal{L}_{\\text{total}} = \\mathcal{L}_{\\text{sup}} + \\lambda_{\\text{motion}} \\mathcal{L}_{\\text{motion}} + \\lambda_{\\text{pseudo}} \\mathcal{L}_{\\text{pseudo}}$$"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "loss_manager = ExperimentLossManager(\n",
+                "    dice_weight=1.0,\n",
+                "    ce_weight=1.0,\n",
+                "    motion_weight=0.1,\n",
+                "    pseudo_weight=0.25,\n",
+                "    num_classes=4,\n",
+                ")\n",
+                "\n",
+                "# Load sample batch\n",
+                "seg_dataset = ACDCSegDataset(\n",
+                "    processed_dir=str(project_root / \"data\" / \"processed\"),\n",
+                "    split_file=str(splits_dir / \"labeled_10.txt\"),\n",
+                ")\n",
+                "sample = seg_dataset[0]\n",
+                "img = sample['image'].unsqueeze(0)\n",
+                "target = sample['mask'].unsqueeze(0)\n",
+                "\n",
+                "model.eval()\n",
+                "with torch.no_grad():\n",
+                "    logits = model(img)\n",
+                "\n",
+                "# Compute supervised loss\n",
+                "total_loss, breakdown = loss_manager.compute_loss(\n",
+                "    logits_sup=logits,\n",
+                "    targets_sup=target,\n",
+                ")\n",
+                "\n",
+                "print(\"Loss Breakdown on Sample:\")\n",
+                "for k, v in breakdown.items():\n",
+                "    print(f\"  {k:15s}: {v:.4f}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 6. Inspecting the Experiment Registry\n",
+                "All experiment runs are automatically tracked in `results/experiments/experiment_registry.json`."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "registry = ExperimentRegistry(project_root / \"results\" / \"experiments\" / \"experiment_registry.json\")\n",
+                "print(f\"Total Registered Experiments: {len(registry.records)}\")\n",
+                "\n",
+                "for exp_id, rec in list(registry.records.items())[:4]:\n",
+                "    print(f\"  [{exp_id}]: Mode={rec.get('mode')} | Fraction={rec.get('label_fraction')}% | Status={rec.get('status')}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 7. Training Matrix Commands (`TRAINING MACHINE ONLY`)\n",
+                "\n",
+                "To execute the full experimental matrix on the separate GPU training system:\n",
+                "\n",
+                "```bash\n",
+                "# ========================================================\n",
+                "# TRAINING MACHINE ONLY (DO NOT RUN ON DEV SYSTEM)\n",
+                "# ========================================================\n",
+                "\n",
+                "# Variant A: Supervised Baseline across 10%, 25%, 50%, 100%\n",
+                "python src/experiment_runner.py --mode supervised --label-fraction 10 --device cuda\n",
+                "python src/experiment_runner.py --mode supervised --label-fraction 25 --device cuda\n",
+                "python src/experiment_runner.py --mode supervised --label-fraction 50 --device cuda\n",
+                "python src/experiment_runner.py --mode supervised --label-fraction 100 --device cuda\n",
+                "\n",
+                "# Variant B: SSL Fine-Tuning across label regimes\n",
+                "python src/experiment_runner.py --mode ssl_finetune --label-fraction 10 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_finetune --label-fraction 25 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_finetune --label-fraction 50 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_finetune --label-fraction 100 --device cuda\n",
+                "\n",
+                "# Variant C: SSL + Motion Consistency across label regimes\n",
+                "python src/experiment_runner.py --mode ssl_motion --label-fraction 10 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion --label-fraction 25 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion --label-fraction 50 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion --label-fraction 100 --device cuda\n",
+                "\n",
+                "# Variant D: Progressive Framework (SSL + Motion + Pseudo-Labels)\n",
+                "python src/experiment_runner.py --mode ssl_motion_pseudo --label-fraction 10 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion_pseudo --label-fraction 25 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion_pseudo --label-fraction 50 --device cuda\n",
+                "python src/experiment_runner.py --mode ssl_motion_pseudo --label-fraction 100 --device cuda\n",
+                "```"
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.11.9"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 4
+}
+
+out_path = Path("notebooks/07_limited_label_finetuning.ipynb")
+out_path.parent.mkdir(parents=True, exist_ok=True)
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(nb, f, indent=2)
+
+print(f"Successfully generated {out_path}")

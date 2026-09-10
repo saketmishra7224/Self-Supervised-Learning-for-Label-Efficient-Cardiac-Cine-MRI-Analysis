@@ -1,0 +1,57 @@
+{
+  "supervised_10pct_seed42_smoketest": {
+    "mode": "supervised",
+    "label_fraction": 10,
+    "status": "smoke_test_passed",
+    "loss_breakdown": {
+      "loss_sup": 2.4250524044036865,
+      "loss_total": 2.4250524044036865
+    },
+    "last_updated": "2026-09-05 23:40:27"
+  },
+  "ssl_finetune_25pct_seed42_smoketest": {
+    "mode": "ssl_finetune",
+    "label_fraction": 25,
+    "status": "smoke_test_passed",
+    "loss_breakdown": {
+      "loss_sup": 2.3678741455078125,
+      "loss_total": 2.3678741455078125
+    },
+    "last_updated": "2026-09-05 23:40:29"
+  },
+  "ssl_motion_50pct_seed42_smoketest": {
+    "mode": "ssl_motion",
+    "label_fraction": 50,
+    "status": "smoke_test_passed",
+    "loss_breakdown": {
+      "loss_sup": 2.8460445404052734,
+      "loss_motion": 0.037660907953977585,
+      "loss_total": 2.8498106002807617
+    },
+    "last_updated": "2026-09-05 23:40:31"
+  },
+  "ssl_motion_pseudo_100pct_seed42_smoketest": {
+    "mode": "ssl_motion_pseudo",
+    "label_fraction": 100,
+    "status": "smoke_test_passed",
+    "loss_breakdown": {
+      "loss_sup": 2.3601553440093994,
+      "loss_motion": 0.037660907953977585,
+      "loss_pseudo": 0.08538872748613358,
+      "loss_total": 2.3852686882019043
+    },
+    "last_updated": "2026-09-05 23:40:34"
+  },
+  "ssl_motion_pseudo_10pct_seed42_smoketest": {
+    "mode": "ssl_motion_pseudo",
+    "label_fraction": 10,
+    "status": "smoke_test_passed",
+    "loss_breakdown": {
+      "loss_sup": 2.2647929191589355,
+      "loss_motion": 0.037660907953977585,
+      "loss_pseudo": 0.060782283544540405,
+      "loss_total": 2.283754587173462
+    },
+    "last_updated": "2026-09-05 23:40:55"
+  }
+}

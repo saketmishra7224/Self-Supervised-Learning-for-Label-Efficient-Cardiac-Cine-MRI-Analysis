@@ -1,0 +1,48 @@
+# =============================================================================
+# Baseline Cardiac Cine MRI 4-Class Segmentation Configuration (2D U-Net)
+# =============================================================================
+
+experiment_name: "baseline_unet"
+random_seed: 42
+device: "auto"  # 'auto' automatically selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  train_split: "data/splits/train_patients.txt"
+  val_split: "data/splits/val_patients.txt"
+  test_split: "data/splits/test_patients.txt"
+  image_size: [256, 256]  # [H, W] in-plane resolution
+  num_classes: 4  # 0=Background, 1=LV cavity, 2=Myocardium, 3=RV cavity
+  num_workers: 0  # 0 for safe CPU/multiprocessing portability; 4-8 on Linux/GPU
+  label_fraction: 1.0  # 1.0 (100%), 0.50 (50%), 0.25 (25%), 0.10 (10%)
+
+model:
+  architecture: "2d_unet"
+  in_channels: 1
+  num_classes: 4
+  encoder_channels: [32, 64, 128, 256]
+  dropout: 0.1
+  use_residual: true
+
+training:
+  batch_size: 8
+  epochs: 200
+  early_stopping_patience: 30
+  optimizer: "adamw"
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  scheduler: "cosine"  # Options: "cosine", "plateau", "none"
+  warmup_epochs: 5
+  mixed_precision: true  # Automatically disabled if running on CPU
+
+loss:
+  type: "dice_ce"
+  dice_weight: 1.0
+  ce_weight: 1.0
+  include_background: false  # Exclude background class 0 from Dice loss calculation
+
+logging:
+  checkpoint_dir: "checkpoints"
+  output_dir: "results/baseline"
+  log_dir: "results/logs"

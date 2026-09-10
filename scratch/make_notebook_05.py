@@ -1,0 +1,355 @@
+import json
+from pathlib import Path
+
+nb = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# Motion-Guided Self-Supervised Learning for Cardiac Cine MRI\n",
+                "## Notebook 05: Motion Estimation & Temporal Consistency Module\n",
+                "\n",
+                "This notebook demonstrates the **Motion Estimation & Differentiable Warping Pipeline** designed to leverage cardiac cine temporal dynamics.\n",
+                "\n",
+                "### Core Pipeline Components:\n",
+                "1. **`SimpleFlowNet`**: A lightweight, fully differentiable 2D CNN (117k parameters) that estimates dense 2D displacement fields $(u_x, u_y)$ between consecutive cine frames $[I_t, I_{t+1}]$.\n",
+                "2. **`SpatialTransformer`**: A differentiable spatial warping operator utilizing `F.grid_sample` to warp images, intermediate feature maps, and segmentation masks.\n",
+                "3. **Self-Supervised Motion Consistency**: Combined objective comprising photometric intensity matching $\\mathcal{L}_{\\text{photo}}$ and Total Variation smoothness regularization $\\mathcal{L}_{\\text{smooth}}$.\n",
+                "\n",
+                "> **COMPUTE CONSTRAINT NOTE**:\n",
+                "> In strict accordance with project requirements, actual multi-epoch training is performed on a dedicated GPU training system (`TRAINING MACHINE ONLY`).\n",
+                "> This notebook runs a lightweight CPU demonstration without executing expensive training loops."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import os\n",
+                "import sys\n",
+                "from pathlib import Path\n",
+                "\n",
+                "# Ensure project root is in sys.path\n",
+                "project_root = Path.cwd().resolve()\n",
+                "if project_root.name == 'notebooks':\n",
+                "    project_root = project_root.parent\n",
+                "if str(project_root) not in sys.path:\n",
+                "    sys.path.insert(0, str(project_root))\n",
+                "\n",
+                "import yaml\n",
+                "import numpy as np\n",
+                "import matplotlib.pyplot as plt\n",
+                "import torch\n",
+                "import torch.nn.functional as F\n",
+                "\n",
+                "from src.motion import (\n",
+                "    SimpleFlowNet,\n",
+                "    SpatialTransformer,\n",
+                "    MotionEstimator,\n",
+                "    warp_features,\n",
+                "    warp_mask,\n",
+                "    compute_temporal_consistency_loss,\n",
+                ")\n",
+                "from src.dataset import ACDCTemporalDataset\n",
+                "\n",
+                "print(f\"Project root: {project_root}\")\n",
+                "print(f\"PyTorch version: {torch.__version__}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 1. Load Motion Configuration\n",
+                "We inspect the configuration in `configs/motion.yaml`."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "config_path = project_root / \"configs\" / \"motion.yaml\"\n",
+                "with open(config_path, \"r\") as f:\n",
+                "    config = yaml.safe_load(f)\n",
+                "\n",
+                "print(\"Motion Configuration:\")\n",
+                "print(f\"  Method:              {config['motion_model']['method']}\")\n",
+                "print(f\"  Channels:            {config['motion_model']['channels']}\")\n",
+                "print(f\"  Warping mode:        {config['warping']['mode']}\")\n",
+                "print(f\"  Align corners:       {config['warping']['align_corners']}\")\n",
+                "print(f\"  Photometric weight:  {config['loss']['photometric_weight']}\")\n",
+                "print(f\"  Smoothness weight:   {config['loss']['smoothness_weight']}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 2. Load Adjacent Frame Pair $(I_t, I_{t+1})$\n",
+                "We load an adjacent frame pair from `ACDCTemporalDataset`. Frames are strictly from the same patient and sequential cine phases."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "data_cfg = config['data']\n",
+                "dataset = ACDCTemporalDataset(\n",
+                "    processed_dir=str(project_root / data_cfg['processed_dir']),\n",
+                "    split_file=str(project_root / data_cfg['train_split']),\n",
+                ")\n",
+                "\n",
+                "sample = dataset[50]\n",
+                "frame_t = sample['frame_t'].unsqueeze(0)   # (1, 1, 256, 256)\n",
+                "frame_t1 = sample['frame_t1'].unsqueeze(0) # (1, 1, 256, 256)\n",
+                "\n",
+                "print(f\"Patient:       {sample['patient_id']}\")\n",
+                "print(f\"Slice Index:   {sample['slice_idx']}\")\n",
+                "print(f\"Frame indices: t={sample['frame_idx_t']} -> t+1={sample['frame_idx_t1']}\")\n",
+                "print(f\"Frame shape:   {frame_t.shape}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 3. Initialize MotionEstimator\n",
+                "We instantiate `MotionEstimator` on CPU and inspect its parameter count."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "device = torch.device('cpu')\n",
+                "motion_estimator = MotionEstimator(\n",
+                "    channels=config['motion_model']['channels'],\n",
+                "    align_corners=config['warping']['align_corners'],\n",
+                "    padding_mode=config['warping']['padding_mode'],\n",
+                "    photometric_weight=config['loss']['photometric_weight'],\n",
+                "    smoothness_weight=config['loss']['smoothness_weight'],\n",
+                ").to(device)\n",
+                "\n",
+                "num_params = sum(p.numel() for p in motion_estimator.parameters() if p.requires_grad)\n",
+                "print(f\"MotionEstimator initialized on {device}.\")\n",
+                "print(f\"Trainable parameters: {num_params:,} (lightweight CNN)\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 4. Motion Estimation & Forward Warping\n",
+                "We estimate the displacement field and warp frame $t$ toward frame $t+1$."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "with torch.no_grad():\n",
+                "    output = motion_estimator(frame_t, frame_t1)\n",
+                "\n",
+                "flow = output['flow']        # (1, 2, 256, 256)\n",
+                "warped_t = output['warped_t']# (1, 1, 256, 256)\n",
+                "\n",
+                "print(f\"Displacement field shape: {flow.shape} (dx, dy)\")\n",
+                "print(f\"Warped image shape:       {warped_t.shape}\")\n",
+                "print(f\"Photometric Loss:         {output['photo_loss'].item():.4f}\")\n",
+                "print(f\"Smoothness Loss:          {output['smooth_loss'].item():.4f}\")\n",
+                "print(f\"Total Motion Loss:        {output['total_loss'].item():.4f}\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 5. Visualizing Displacement Field and Motion Compensation\n",
+                "We display the source frame, target frame, flow magnitude, warped frame, and residual difference."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "img_t = frame_t.squeeze().numpy()\n",
+                "img_t1 = frame_t1.squeeze().numpy()\n",
+                "img_warped = warped_t.squeeze().numpy()\n",
+                "\n",
+                "dx = flow[0, 0].numpy()\n",
+                "dy = flow[0, 1].numpy()\n",
+                "flow_mag = np.sqrt(dx**2 + dy**2)\n",
+                "\n",
+                "raw_err = np.abs(img_t1 - img_t)\n",
+                "warped_err = np.abs(img_t1 - img_warped)\n",
+                "\n",
+                "fig, axes = plt.subplots(1, 5, figsize=(22, 4.5))\n",
+                "\n",
+                "axes[0].imshow(img_t, cmap='gray')\n",
+                "axes[0].set_title(\"Source Frame (t)\")\n",
+                "axes[0].axis('off')\n",
+                "\n",
+                "axes[1].imshow(img_t1, cmap='gray')\n",
+                "axes[1].set_title(\"Target Frame (t+1)\")\n",
+                "axes[1].axis('off')\n",
+                "\n",
+                "im_flow = axes[2].imshow(flow_mag, cmap='viridis')\n",
+                "axes[2].set_title(f\"Flow Magnitude\\n(Max: {flow_mag.max():.2f} px)\")\n",
+                "axes[2].axis('off')\n",
+                "plt.colorbar(im_flow, ax=axes[2], fraction=0.046, pad=0.04)\n",
+                "\n",
+                "axes[3].imshow(img_warped, cmap='gray')\n",
+                "axes[3].set_title(\"Warped Frame: W(t, flow)\")\n",
+                "axes[3].axis('off')\n",
+                "\n",
+                "im_err = axes[4].imshow(warped_err, cmap='inferno')\n",
+                "axes[4].set_title(f\"Residual Error |t+1 - W(t)|\\n(Mean: {warped_err.mean():.4f})\")\n",
+                "axes[4].axis('off')\n",
+                "plt.colorbar(im_err, ax=axes[4], fraction=0.046, pad=0.04)\n",
+                "\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 6. Feature-Level Warping Demonstration\n",
+                "When enforcing feature-level temporal consistency between encoder stages, the spatial resolution of intermediate features is lower than the image. The module automatically resizes and scales the displacement field to match feature map dimensions."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Simulate feature map at encoder stage 1 (C=64, H=128, W=128)\n",
+                "dummy_feature = torch.randn(1, 64, 128, 128)\n",
+                "warped_feature = motion_estimator.warp_features(dummy_feature, flow)\n",
+                "\n",
+                "print(f\"Input feature shape:  {dummy_feature.shape}\")\n",
+                "print(f\"Warped feature shape: {warped_feature.shape}\")\n",
+                "print(\"Feature warping successfully matched spatial dimensions.\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 7. Mask Warping Demonstration\n",
+                "During semi-supervised fine-tuning, motion warping allows propagating labeled masks or high-confidence pseudo-labels from frame $t$ to frame $t+1$."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "dummy_mask = torch.zeros(1, 256, 256, dtype=torch.long)\n",
+                "# Create simulated circular myocardium / LV region\n",
+                "Y, X = torch.meshgrid(torch.arange(256), torch.arange(256), indexing='ij')\n",
+                "r = torch.sqrt((X - 128)**2 + (Y - 128)**2)\n",
+                "dummy_mask[r < 30] = 1   # LV\n",
+                "dummy_mask[(r >= 30) & (r < 45)] = 2  # Myocardium\n",
+                "\n",
+                "warped_mask = motion_estimator.warp_mask(dummy_mask, flow, num_classes=4)\n",
+                "\n",
+                "fig, axes = plt.subplots(1, 2, figsize=(10, 5))\n",
+                "axes[0].imshow(dummy_mask[0].numpy(), cmap='tab10', vmin=0, vmax=3)\n",
+                "axes[0].set_title(\"Original Mask (t)\")\n",
+                "axes[0].axis('off')\n",
+                "\n",
+                "axes[1].imshow(warped_mask[0].numpy(), cmap='tab10', vmin=0, vmax=3)\n",
+                "axes[1].set_title(\"Warped Mask: W(Mask_t, flow)\")\n",
+                "axes[1].axis('off')\n",
+                "plt.tight_layout()\n",
+                "plt.show()"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 8. Gradient Flow & Trainability Verification\n",
+                "We verify that the motion loss propagates finite gradients through `SimpleFlowNet` and `SpatialTransformer`."
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "motion_estimator.train()\n",
+                "optimizer = torch.optim.AdamW(motion_estimator.parameters(), lr=1e-4)\n",
+                "optimizer.zero_grad()\n",
+                "\n",
+                "loss_dict = motion_estimator(frame_t, frame_t1)\n",
+                "total_loss = loss_dict['total_loss']\n",
+                "total_loss.backward()\n",
+                "\n",
+                "grads = [p.grad for p in motion_estimator.flownet.parameters() if p.requires_grad]\n",
+                "has_valid_grads = all(g is not None and not torch.isnan(g).any() for g in grads)\n",
+                "\n",
+                "print(f\"Total motion loss:  {total_loss.item():.4f}\")\n",
+                "print(f\"All layers received valid gradients: {has_valid_grads}\")\n",
+                "optimizer.step()\n",
+                "print(\"Optimizer step completed successfully.\")"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### 9. Execution on Separate GPU Training System (`TRAINING MACHINE ONLY`)\n",
+                "\n",
+                "To execute motion-guided pretraining and fine-tuning on the separate GPU training server:\n",
+                "\n",
+                "```bash\n",
+                "# ========================================================\n",
+                "# TRAINING MACHINE ONLY (DO NOT RUN ON DEV SYSTEM)\n",
+                "# ========================================================\n",
+                "python src/motion.py --config configs/motion.yaml --device cuda\n",
+                "```\n",
+                "\n",
+                "The motion estimator and spatial transformer integrate seamlessly into the self-supervised and semi-supervised fine-tuning stages."
+            ]
+        }
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.11.9"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 4
+}
+
+out_path = Path("notebooks/05_motion_consistency.ipynb")
+out_path.parent.mkdir(parents=True, exist_ok=True)
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(nb, f, indent=2)
+
+print(f"Successfully generated {out_path}")

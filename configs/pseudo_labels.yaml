@@ -1,0 +1,52 @@
+# =============================================================================
+# Confidence-Filtered Pseudo-Labeling Configuration
+# Selective Pseudo-Labeling for Limited-Label Cardiac Cine MRI Analysis
+# =============================================================================
+
+experiment_name: "confidence_pseudo_labeling"
+random_seed: 42
+device: "auto"  # 'auto' selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  train_split: "data/splits/train_patients.txt"
+  val_split: "data/splits/val_patients.txt"
+  image_size: [256, 256]
+  num_classes: 4  # 0: Background, 1: LV cavity, 2: Myocardium, 3: RV cavity
+  num_workers: 0
+
+filtering:
+  # Confidence metric options:
+  # - "max_probability": Maximum softmax probability (MSP)
+  # - "entropy": Normalized Shannon negative entropy
+  # - "temporal_consistency": Motion-warped adjacent frame agreement
+  # - "hybrid": MSP threshold combined with temporal consistency
+  confidence_metric: "max_probability"
+  
+  # Minimum confidence required to accept a pixel prediction
+  confidence_threshold: 0.90
+  
+  # Maximum allowed normalized entropy (used when metric is "entropy" or "hybrid")
+  entropy_threshold: 0.25
+  
+  # Motion-based temporal consistency filtering
+  use_temporal_consistency: true
+  temporal_consistency_threshold: 0.80
+  
+  # Minimum foreground pixels to retain a slice (avoids empty/hallucinated slices)
+  min_foreground_pixels: 30
+  
+  # Label assigned to rejected/uncertain pixels (ignored in loss computation)
+  ignore_index: -1
+
+model:
+  checkpoint: "checkpoints/baseline_unet_best.pth"  # Source model for generating predictions
+  in_channels: 1
+  num_classes: 4
+  encoder_channels: [32, 64, 128, 256]
+
+logging:
+  output_dir: "results/pseudo_labels"
+  save_metadata: true
+  metadata_file: "pseudo_label_metadata.json"

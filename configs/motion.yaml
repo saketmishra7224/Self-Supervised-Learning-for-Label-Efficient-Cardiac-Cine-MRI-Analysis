@@ -1,0 +1,48 @@
+# =============================================================================
+# Motion Estimation & Temporal Consistency Configuration
+# Lightweight Differentiable Motion Estimation (SimpleFlowNet) & Warping
+# =============================================================================
+
+experiment_name: "motion_temporal_consistency"
+random_seed: 42
+device: "auto"  # 'auto' automatically selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  train_split: "data/splits/train_patients.txt"
+  val_split: "data/splits/val_patients.txt"
+  image_size: [256, 256]  # [H, W] in-plane resolution
+  temporal_interval: 1   # Frame step: 1 = adjacent frames (t, t+1)
+  num_workers: 0         # 0 for portable CPU execution; 4-8 on Linux/GPU server
+
+motion_model:
+  method: "simple_flownet"
+  in_channels: 2          # Concatenated pair [I_t, I_t+1]
+  channels: [16, 32, 64, 32]
+  dropout: 0.0
+
+warping:
+  mode: "bilinear"       # 'bilinear' for images/features, 'nearest' for hard masks
+  padding_mode: "border" # 'border' replicates edge pixels to avoid black border artifacts
+  align_corners: true    # True ensures grid coordinates map symmetrically [-1, 1]
+
+loss:
+  photometric_weight: 1.0  # Weight for L1 photometric warping loss
+  smoothness_weight: 0.1   # Weight for Total Variation displacement smoothness loss
+  feature_weight: 0.1      # Weight for feature-level warped consistency loss
+
+training:
+  batch_size: 16
+  epochs: 50
+  optimizer: "adamw"
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  scheduler: "cosine"
+  mixed_precision: true
+  save_interval: 10
+
+logging:
+  checkpoint_dir: "checkpoints/motion"
+  output_dir: "results/motion"
+  figures_dir: "results/figures"

@@ -1,0 +1,47 @@
+# =============================================================================
+# Self-Supervised Temporal Pretraining Configuration
+# Masked Image Reconstruction + Adjacent-Frame Temporal Feature Consistency
+# =============================================================================
+
+experiment_name: "ssl_temporal_pretraining"
+random_seed: 42
+device: "auto"  # 'auto' automatically selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  train_split: "data/splits/train_patients.txt"
+  val_split: "data/splits/val_patients.txt"
+  image_size: [256, 256]  # [H, W] in-plane resolution
+  num_workers: 0  # 0 for portable CPU/Windows execution; 4-8 on Linux/GPU server
+
+model:
+  architecture: "ssl_temporal"
+  in_channels: 1
+  encoder_channels: [32, 64, 128, 256]
+  proj_dim: 128
+  mask_patch_size: 16  # Non-overlapping patch size (16x16 pixels)
+  mask_ratio: 0.50     # Proportion of patches masked (50%)
+  dropout: 0.1
+  use_residual: true
+
+loss:
+  recon_weight: 1.0       # Weight for masked reconstruction loss
+  temporal_weight: 0.1    # Weight lambda_temporal for adjacent-frame feature consistency
+  recon_loss_type: "l1"   # "l1" or "mse" (computed on masked patches)
+
+training:
+  batch_size: 16
+  epochs: 100
+  optimizer: "adamw"
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  scheduler: "cosine"  # Options: "cosine", "step", "none"
+  warmup_epochs: 5
+  mixed_precision: true  # Automatic Mixed Precision (AMP) enabled on CUDA
+  save_interval: 10     # Save periodic checkpoint every N epochs
+
+logging:
+  checkpoint_dir: "checkpoints/ssl"
+  output_dir: "results/ssl"
+  log_dir: "results/logs"

@@ -1,0 +1,19 @@
+{
+  "dataset_name": "Automated Cardiac Diagnosis Challenge (ACDC)",
+  "official_source": "Automated Cardiac Diagnosis Challenge (ACDC), MICCAI 2017",
+  "official_portal_url": "https://www.creatis.insa-lyon.fr/Challenge/acdc/databases.html",
+  "official_repository_collection_url": "https://humanheart-project.creatis.insa-lyon.fr/database/#collection/637218c173e9f0047faa00fb",
+  "direct_download_api_endpoint": "https://humanheart-project.creatis.insa-lyon.fr/database/api/v1/folder/63721d7073e9f0047faa0525/download",
+  "download_method": "Atomic patient-wise streaming via official Girder REST API",
+  "download_date": "2026-09-05T22:23:10.864030",
+  "archive_filename": "training.zip",
+  "archive_path": "data/raw/training.zip",
+  "archive_size_bytes": 1631323057,
+  "archive_size_mb": 1555.75,
+  "extraction_path": "data/raw/ACDC",
+  "number_of_patients_found": 100,
+  "number_of_image_volumes": 300,
+  "number_of_segmentation_files": 200,
+  "verification_status": "VERIFIED_VALID",
+  "issues_encountered": []
+}

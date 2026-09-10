@@ -1,0 +1,54 @@
+# =============================================================================
+# Preprocessing Configuration for ACDC Cardiac Cine MRI
+# =============================================================================
+
+data:
+  raw_dir: "data/raw/ACDC"
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+
+spatial:
+  target_size: [256, 256]  # [H, W] in-plane target dimensions
+  target_spacing: [1.5, 1.5]  # [sx, sy] in mm in-plane resolution
+  image_interpolation: "bicubic"  # order 3 spline interpolation
+  mask_interpolation: "nearest"  # order 0 nearest-neighbor interpolation
+  crop_pad_mode: "center"  # center-crop if larger, zero-pad if smaller
+  pad_value: 0.0
+
+intensity_normalization:
+  strategy: "per_volume_zscore"  # z-score normalization computed per 4D cine volume
+  clip_percentiles: null  # optional [1, 99] percentile clipping prior to z-score
+  epsilon: 1.0e-8  # numerical stability constant for std deviation
+
+labels:
+  num_classes: 4
+  spec_classes:
+    0: "Background"
+    1: "LV cavity"
+    2: "Myocardium"
+    3: "RV cavity"
+  # Remap from raw ACDC challenge format (0=BG, 1=RV, 2=Myo, 3=LV) to project specification
+  label_remap:
+    0: 0
+    1: 3
+    2: 2
+    3: 1
+
+output:
+  format: "npz_compressed"  # Compressed 2D slice files
+  naming_convention: "{patient_id}_frame{frame_idx:02d}_slice{slice_idx:02d}.npz"
+  fields:
+    - "image"       # float32 (256, 256) normalized slice
+    - "mask"        # int64 (256, 256) remapped mask, or -1 array for unlabeled frames
+    - "patient_id"  # string, e.g. "patient001"
+    - "slice_idx"   # integer, 0-indexed spatial slice from base to apex
+    - "frame_idx"   # integer, 0-indexed temporal frame along cardiac cycle
+    - "phase"       # string: 'ED', 'ES', or 'cine'
+    - "pathology"   # string: 'NOR', 'MINF', 'DCM', 'HCM', 'ARV'
+
+splits:
+  train_ratio: 0.70
+  val_ratio: 0.10
+  test_ratio: 0.20
+  stratify_by: "pathology"
+  random_seed: 42
