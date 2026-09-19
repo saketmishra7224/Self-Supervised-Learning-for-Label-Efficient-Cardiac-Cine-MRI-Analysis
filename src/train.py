@@ -329,6 +329,13 @@ class Trainer:
             self.history['train_loss'].append(train_metrics['train_loss'])
             self.history['val_loss'].append(val_metrics['val_loss'])
             self.history['lr'].append(current_lr)
+            # Experiment-specific trainers may report additional training
+            # components (for example motion or pseudo-label losses). Preserve
+            # them in the recoverable history without imposing them on the
+            # baseline supervised trainer.
+            for metric_name, metric_value in train_metrics.items():
+                if metric_name != 'train_loss':
+                    self.history.setdefault(metric_name, []).append(metric_value)
             
             val_dice = val_metrics.get('Mean_Dice', val_metrics.get('val_dice', 0.0))
             self.history['val_dice'].append(val_dice)

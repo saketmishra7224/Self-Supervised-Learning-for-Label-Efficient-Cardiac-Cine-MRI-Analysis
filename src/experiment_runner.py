@@ -1,60 +1,40 @@
+"""Run reproducible, patient-isolated limited-label fine-tuning experiments.
+
+SSL and motion checkpoints are dependencies, not training steps in this module.
+Each fine-tuning run has its own recoverable state and results directory.
 """
-Reproducible Experiment Runner for Limited-Label Cardiac Cine MRI Segmentation.
-
-Supports the 16-experiment matrix:
-- 4 Label Regimes: 10%, 25%, 50%, 100% of training patients (nested patient splits)
-- 4 Modular Model Variants:
-    A. Supervised Baseline: Standard 2D U-Net initialized from scratch
-    B. SSL Fine-Tuning: 2D U-Net initialized with pretrained SharedEncoder
-    C. SSL + Motion Consistency: Pretrained 2D U-Net + Motion-Warped Temporal Regularization
-    D. SSL + Motion + Pseudo-Labels: Full framework with confidence-filtered pseudo-labels
-
-Integrates experiment logging, metric tracking, checkpoint saving, and lightweight smoke tests.
-"""
-
+import argparse
+import json
 import os
+import random
 import sys
+import time
+from itertools import cycle
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
 
-# ---------------------------------------------------------------------------
-# Sys.path guard: ensure project root is on sys.path and prevent src/ from
-# shadowing standard library modules.
-# ---------------------------------------------------------------------------
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if len(sys.path) > 0 and os.path.abspath(sys.path[0]) == os.path.dirname(os.path.abspath(__file__)):
+if sys.path and os.path.abspath(sys.path[0]) == os.path.dirname(os.path.abspath(__file__)):
     sys.path.pop(0)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import time
-import json
-import random
-import argparse
-from pathlib import Path
-from typing import Dict, Optional, Tuple, List, Any, Union
-
-import yaml
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+import yaml
+from torch.cuda.amp import autocast
+from torch.utils.data import DataLoader, Dataset, Subset
 
-from src.encoder import count_parameters, load_encoder_weights
-from src.segmentation_model import SegmentationUNet
-from src.motion import MotionEstimator, warp_mask
-from src.pseudo_labels import compute_confidence_map, apply_confidence_filtering
-from src.losses import DiceCELoss
-from src.metrics import compute_metrics_batch, compute_patient_level_metrics
 from src.dataset import ACDCSegDataset, ACDCTemporalDataset, get_train_transforms, get_val_transforms
+from src.encoder import count_parameters, load_encoder_weights
+from src.losses import DiceCELoss
+from src.motion import MotionEstimator
+from src.segmentation_model import SegmentationUNet
+from src.train import Trainer, compute_val_metrics_wrapper
 
 
-# ---------------------------------------------------------------------------
-# 1. Reproducibility & Setup Helpers
-# ---------------------------------------------------------------------------
-
-def set_seed(seed: int = 42):
-    """Seed all pseudo-random number generators."""
+def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -65,375 +45,213 @@ def set_seed(seed: int = 42):
 
 
 def get_device(preference: str = "auto") -> torch.device:
-    """Resolve compute device."""
-    if preference == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(preference)
+    return torch.device("cuda" if preference == "auto" and torch.cuda.is_available() else "cpu" if preference == "auto" else preference)
 
 
-# ---------------------------------------------------------------------------
-# 2. Experiment Registry Manager
-# ---------------------------------------------------------------------------
+def _read_patient_ids(split_file: Union[str, Path]) -> set:
+    path = Path(split_file)
+    if path.suffix == ".txt":
+        return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return set(data if isinstance(data, list) else data.get("patients", data.get("train", [])))
+
 
 class ExperimentRegistry:
-    """Maintains a persistent JSON registry of all experimental runs."""
-    
-    def __init__(self, registry_file: Union[str, Path] = "results/experiments/experiment_registry.json"):
+    def __init__(self, registry_file: Union[str, Path]):
         self.registry_file = Path(registry_file)
         self.registry_file.parent.mkdir(parents=True, exist_ok=True)
-        self.records = self._load()
-    
-    def _load(self) -> Dict[str, Any]:
-        if self.registry_file.exists():
-            try:
-                with open(self.registry_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return {}
-        return {}
-    
-    def register(self, experiment_id: str, data: Dict[str, Any]):
-        """Append or update an experiment record."""
-        self.records[experiment_id] = {
-            **data,
-            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        with open(self.registry_file, "w", encoding="utf-8") as f:
-            json.dump(self.records, f, indent=2)
-        print(f"Experiment [{experiment_id}] registered in: {self.registry_file}")
+        try:
+            self.records = json.loads(self.registry_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.records = {}
+
+    def register(self, experiment_id: str, data: Dict[str, Any]) -> None:
+        self.records[experiment_id] = {**data, "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")}
+        self.registry_file.write_text(json.dumps(self.records, indent=2), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# 3. Model Factory with Encoder Transfer Support
-# ---------------------------------------------------------------------------
+class PseudoLabelArtifactDataset(Dataset):
+    """Load confidence-filtered pseudo labels after validating their patients."""
+    def __init__(self, processed_dir: str, manifest_path: Union[str, Path], train_patients: set, transform=None):
+        self.processed_dir, self.manifest_path = Path(processed_dir), Path(manifest_path)
+        self.root = self.manifest_path.parent
+        self.records = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        if not self.records:
+            raise ValueError(f"Pseudo-label manifest is empty: {self.manifest_path}")
+        invalid = {str(record["patient_id"]) for record in self.records} - train_patients
+        if invalid:
+            raise ValueError(f"Pseudo-label manifest contains non-training patients: {sorted(invalid)}")
+        self.transform = transform
 
-def build_experiment_model(
-    config: dict,
-    mode: str,
-    ssl_checkpoint: Optional[str] = None,
-    device: torch.device = torch.device("cpu"),
-) -> Tuple[SegmentationUNet, Optional[MotionEstimator]]:
-    """
-    Construct model and optional motion estimator according to experimental variant.
-    
-    Args:
-        config: Full configuration dict
-        mode: One of 'supervised', 'ssl_finetune', 'ssl_motion', 'ssl_motion_pseudo'
-        ssl_checkpoint: Optional override path to SSL pretrained encoder weights
-        device: Target compute device
-        
-    Returns:
-        model: SegmentationUNet (with loaded SSL weights if applicable)
-        motion_estimator: MotionEstimator instance if mode uses motion, else None
-    """
-    model_cfg = config.get('model', {})
-    in_channels = model_cfg.get('in_channels', 1)
-    num_classes = model_cfg.get('num_classes', 4)
-    encoder_channels = model_cfg.get('encoder_channels', [32, 64, 128, 256])
-    dropout = model_cfg.get('dropout', 0.1)
-    use_residual = model_cfg.get('use_residual', True)
-    
-    model = SegmentationUNet(
-        in_channels=in_channels,
-        num_classes=num_classes,
-        encoder_channels=encoder_channels,
-        dropout=dropout,
-        use_residual=use_residual,
-    ).to(device)
-    
-    variant_cfg = config.get('variants', {}).get(mode, {})
-    use_ssl = variant_cfg.get('use_ssl_pretrained', False) or (mode != "supervised")
-    
-    if use_ssl:
-        ckpt_path = ssl_checkpoint or variant_cfg.get('ssl_checkpoint', "checkpoints/ssl/ssl_encoder_best.pth")
-        if Path(ckpt_path).exists():
-            print(f"Loading pretrained encoder weights from: {ckpt_path}")
-            load_encoder_weights(model.encoder, ckpt_path, strict=False)
-        else:
-            print(f"Notice: SSL checkpoint '{ckpt_path}' not found on dev system. Using initialized weights for testing.")
-    
-    # Initialize motion estimator if variant uses motion
-    use_motion = variant_cfg.get('use_motion', False)
-    motion_estimator = None
-    if use_motion:
-        motion_estimator = MotionEstimator(channels=[16, 32, 64, 32]).to(device)
-        motion_ckpt = variant_cfg.get('motion_checkpoint', "checkpoints/motion/motion_model_best.pth")
-        if Path(motion_ckpt).exists():
-            print(f"Loading motion model weights from: {motion_ckpt}")
-            try:
-                motion_estimator.load_state_dict(torch.load(motion_ckpt, map_location=device))
-            except Exception as e:
-                print(f"Notice: Could not load motion checkpoint ({e}). Using initialized weights.")
-    
-    return model, motion_estimator
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        record = self.records[index]
+        with np.load(self.root / record["file"], allow_pickle=True) as labels:
+            patient_id = str(labels["patient_id"])
+            frame_idx, slice_idx = int(labels["frame_idx"]), int(labels["slice_idx"])
+            filtered = labels["filtered_pseudo_label"].astype(np.int64)
+        image_path = self.processed_dir / f"{patient_id}_frame{frame_idx:02d}_slice{slice_idx:02d}.npz"
+        with np.load(image_path, allow_pickle=True) as image_data:
+            image = image_data["image"].astype(np.float32)
+        # Existing segmentation transforms operate on image/mask pairs, which
+        # keeps image and pseudo target spatially aligned.
+        sample = {"image": torch.from_numpy(image).unsqueeze(0), "mask": torch.from_numpy(filtered).long()}
+        if self.transform:
+            sample = self.transform(sample)
+        return {"image": sample["image"], "pseudo_label": sample["mask"], "patient_id": patient_id}
 
 
-# ---------------------------------------------------------------------------
-# 4. Multi-Component Loss Manager
-# ---------------------------------------------------------------------------
-
-class ExperimentLossManager:
-    """
-    Computes combined multi-objective loss:
-        L_total = L_sup + lambda_motion * L_motion + lambda_pseudo * L_pseudo
-    """
-    
-    def __init__(
-        self,
-        dice_weight: float = 1.0,
-        ce_weight: float = 1.0,
-        motion_weight: float = 0.1,
-        pseudo_weight: float = 0.25,
-        num_classes: int = 4,
-        include_background: bool = False,
-    ):
-        self.sup_criterion = DiceCELoss(
-            num_classes=num_classes,
-            dice_weight=dice_weight,
-            ce_weight=ce_weight,
-            include_background=include_background,
-        )
-        self.motion_weight = motion_weight
-        self.pseudo_weight = pseudo_weight
-        self.num_classes = num_classes
-    
-    def compute_loss(
-        self,
-        logits_sup: torch.Tensor,
-        targets_sup: torch.Tensor,
-        motion_loss: Optional[torch.Tensor] = None,
-        logits_pseudo: Optional[torch.Tensor] = None,
-        pseudo_labels: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute total weighted loss and return breakdown metrics.
-        """
-        # 1. Supervised segmentation loss
-        sup_loss = self.sup_criterion(logits_sup, targets_sup)
-        total_loss = sup_loss
-        loss_dict = {'loss_sup': sup_loss.item()}
-        
-        # 2. Optional motion/temporal loss
-        if motion_loss is not None:
-            total_loss = total_loss + self.motion_weight * motion_loss
-            loss_dict['loss_motion'] = motion_loss.item()
-        
-        # 3. Optional confidence-filtered pseudo-label loss
-        if logits_pseudo is not None and pseudo_labels is not None:
-            # Mask out rejected pixels (ignore_index = -1)
-            valid_mask = (pseudo_labels >= 0)
-            if valid_mask.sum() > 0:
-                pseudo_ce = F.cross_entropy(
-                    logits_pseudo,
-                    pseudo_labels,
-                    ignore_index=-1,
-                )
-                total_loss = total_loss + self.pseudo_weight * pseudo_ce
-                loss_dict['loss_pseudo'] = pseudo_ce.item()
-            else:
-                loss_dict['loss_pseudo'] = 0.0
-        
-        loss_dict['loss_total'] = total_loss.item()
-        return total_loss, loss_dict
+def _load_motion_checkpoint(model: MotionEstimator, checkpoint_path: Path, device: torch.device) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
+    model.eval()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
 
 
-# ---------------------------------------------------------------------------
-# 5. Smoke Test Runner (1 Batch Verification)
-# ---------------------------------------------------------------------------
-
-def run_experiment_smoke_test(
-    config: dict,
-    mode: str,
-    label_fraction: int,
-    device: torch.device,
-) -> bool:
-    """
-    Lightweight 1-batch smoke test validating pipeline mechanics without training.
-    """
-    print(f"\n{'='*70}")
-    print(f"RUNNING SMOKE TEST: Variant [{mode.upper()}], Label Fraction [{label_fraction}%]")
-    print(f"{'='*70}")
-    
-    data_cfg = config.get('data', {})
-    processed_dir = data_cfg.get('processed_dir', 'data/processed')
-    split_file = data_cfg['subsets'].get(label_fraction)
-    assert Path(split_file).exists(), f"Subset split file not found: {split_file}"
-    
-    # 1. Load dataset subset
-    seg_dataset = ACDCSegDataset(processed_dir=processed_dir, split_file=split_file)
-    print(f"[1/5] Labeled dataset loaded: {len(seg_dataset)} labeled slices from {split_file}")
-    
-    loader = DataLoader(seg_dataset, batch_size=2, shuffle=False)
-    batch = next(iter(loader))
-    images = batch['image'].to(device)
-    masks = batch['mask'].to(device)
-    print(f"      Batch shape: image={images.shape}, mask={masks.shape}")
-    
-    # 2. Build model & motion estimator
-    model, motion_est = build_experiment_model(config, mode=mode, device=device)
-    total_params = count_parameters(model)
-    print(f"[2/5] Model constructed: {model.__class__.__name__} ({total_params:,} parameters)")
-    if motion_est:
-        print(f"      Motion estimator active: {count_parameters(motion_est):,} parameters")
-    
-    # 3. Optimizer setup with differential learning rates
-    opt_cfg = config.get('optimization', {})
-    lr_dec = opt_cfg.get('lr_decoder', 1e-4)
-    lr_enc = opt_cfg.get('lr_encoder', 1e-5)
-    weight_decay = opt_cfg.get('weight_decay', 1e-5)
-    
-    optimizer = torch.optim.AdamW([
-        {'params': model.decoder.parameters(), 'lr': lr_dec},
-        {'params': model.encoder.parameters(), 'lr': lr_enc},
-    ], weight_decay=weight_decay)
-    
-    # 4. Forward pass & multi-objective loss
-    loss_cfg = config.get('loss', {})
-    loss_manager = ExperimentLossManager(
-        dice_weight=loss_cfg.get('dice_weight', 1.0),
-        ce_weight=loss_cfg.get('ce_weight', 1.0),
-        motion_weight=loss_cfg.get('motion_weight', 0.1),
-        pseudo_weight=loss_cfg.get('pseudo_weight', 0.25),
-        num_classes=data_cfg.get('num_classes', 4),
-    )
-    
-    optimizer.zero_grad()
-    model.train()
-    logits = model(images)
-    
-    # Optional motion loss
-    motion_loss = None
-    if motion_est is not None:
-        temp_dataset = ACDCTemporalDataset(processed_dir=processed_dir, split_file=split_file)
-        temp_sample = temp_dataset[0]
-        ft = temp_sample['frame_t'].unsqueeze(0).to(device)
-        ft1 = temp_sample['frame_t1'].unsqueeze(0).to(device)
-        motion_out = motion_est(ft, ft1)
-        motion_loss = motion_out['total_loss']
-    
-    # Optional pseudo-label loss
-    logits_pseudo = None
-    pseudo_labels = None
-    if mode in ["ssl_pseudo", "full_pipeline", "ssl_motion_pseudo"]:
-        # Simulate pseudo-labeling forward on the batch
-        probs = F.softmax(logits, dim=1)
-        raw_pseudo = torch.argmax(probs, dim=1)
-        conf = compute_confidence_map(probs, method="max_probability")
-        filt_labels, _, _ = apply_confidence_filtering(raw_pseudo, conf, threshold=0.9, ignore_index=-1)
-        logits_pseudo = logits
-        pseudo_labels = filt_labels
-    
-    total_loss, loss_breakdown = loss_manager.compute_loss(
-        logits_sup=logits,
-        targets_sup=masks,
-        motion_loss=motion_loss,
-        logits_pseudo=logits_pseudo,
-        pseudo_labels=pseudo_labels,
-    )
-    
-    print(f"[3/5] Forward pass & Loss computed:")
-    for k, v in loss_breakdown.items():
-        print(f"      {k}: {v:.4f}")
-    assert torch.isfinite(total_loss), "Loss is not finite!"
-    
-    # 5. Backward gradient flow & parameter update
-    total_loss.backward()
-    
-    enc_grads = any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.encoder.parameters())
-    dec_grads = any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.decoder.parameters())
-    print(f"[4/5] Gradient flow check: Encoder={enc_grads}, Decoder={dec_grads}")
-    assert enc_grads and dec_grads, "Gradients missing in encoder or decoder!"
-    
-    optimizer.step()
-    print("      Optimizer step executed successfully.")
-    
-    # 6. Verify registry entry
-    registry = ExperimentRegistry(config.get('logging', {}).get('registry_file', 'results/experiments/experiment_registry.json'))
-    exp_id = f"{mode}_{label_fraction}pct_seed{config.get('project', {}).get('seed', 42)}_smoketest"
-    registry.register(exp_id, {
-        "mode": mode,
-        "label_fraction": label_fraction,
-        "status": "smoke_test_passed",
-        "loss_breakdown": loss_breakdown,
-    })
-    print(f"[5/5] Smoke test logged to registry.")
-    print(f"{'='*70}")
-    print(f"SMOKE TEST PASSED for [{mode.upper()} {label_fraction}%] (OK)\n")
-    return True
+def build_experiment_model(config: dict, mode: str, ssl_checkpoint: Optional[str], device: torch.device) -> Tuple[SegmentationUNet, Optional[MotionEstimator]]:
+    model_cfg, variant = config["model"], config["variants"][mode]
+    model = SegmentationUNet(in_channels=model_cfg.get("in_channels", 1), num_classes=model_cfg.get("num_classes", 4), encoder_channels=model_cfg.get("encoder_channels", [32, 64, 128, 256]), dropout=model_cfg.get("dropout", 0.1), use_residual=model_cfg.get("use_residual", True)).to(device)
+    if variant.get("use_ssl_pretrained", False):
+        path = Path(ssl_checkpoint or variant["ssl_checkpoint"])
+        if not path.exists():
+            raise FileNotFoundError(f"{mode} requires an SSL checkpoint, but it is missing: {path}")
+        load_encoder_weights(model.encoder, str(path), strict=False)
+    motion = None
+    if variant.get("use_motion", False):
+        path = Path(variant["motion_checkpoint"])
+        if not path.exists():
+            raise FileNotFoundError(f"{mode} requires a motion checkpoint, but it is missing: {path}")
+        motion = MotionEstimator(channels=[16, 32, 64, 32]).to(device)
+        _load_motion_checkpoint(motion, path, device)
+    return model, motion
 
 
-# ---------------------------------------------------------------------------
-# 6. CLI Entrypoint
-# ---------------------------------------------------------------------------
+def load_pseudo_dataset(config: dict, label_fraction: int, train_patients: set, transform) -> PseudoLabelArtifactDataset:
+    pseudo_root = Path(config["logging"].get("pseudo_labels_dir", "results/pseudo_labels")) / f"{label_fraction}pct"
+    metadata_path, manifest_path = pseudo_root / "pseudo_label_metadata.json", pseudo_root / "pseudo_label_index.json"
+    if not metadata_path.exists() or not manifest_path.exists():
+        raise FileNotFoundError(f"Pseudo-label artifacts for {label_fraction}% are required at {pseudo_root}. Run src/pseudo_labels.py first.")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if int(metadata.get("label_fraction", -1)) != label_fraction or not metadata.get("teacher_checkpoint"):
+        raise ValueError("Pseudo-label metadata must record the requested fraction and its teacher checkpoint.")
+    return PseudoLabelArtifactDataset(config["data"]["processed_dir"], manifest_path, train_patients, transform)
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Limited-Label Fine-Tuning & Label-Efficiency Experiment Runner"
-    )
-    parser.add_argument(
-        "--config", type=str, default="configs/experiments.yaml",
-        help="Path to parameterized experiments YAML config"
-    )
-    parser.add_argument(
-        "--mode", type=str, default="supervised",
-        choices=["supervised", "ssl_finetune", "ssl_motion", "ssl_pseudo", "full_pipeline", "ssl_motion_pseudo"],
-        help="Experimental model variant"
-    )
-    parser.add_argument(
-        "--label-fraction", type=int, default=100,
-        choices=[10, 25, 50, 100],
-        help="Percentage of labeled patients"
-    )
-    parser.add_argument(
-        "--device", type=str, default="auto",
-        help="Compute device ('auto', 'cuda', 'cpu')"
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Reproducibility random seed"
-    )
-    parser.add_argument(
-        "--ssl-checkpoint", type=str, default=None,
-        help="Override path to SSL encoder checkpoint"
-    )
-    parser.add_argument(
-        "--smoke-test", action="store_true",
-        help="Execute a 1-batch CPU smoke test without performing full training"
-    )
+
+class FineTuneExperimentTrainer(Trainer):
+    """Existing resumable trainer extended with train-only auxiliary losses."""
+    def __init__(self, *args, motion_estimator=None, temporal_loader=None, pseudo_loader=None, motion_weight=0.0, pseudo_weight=0.0, freeze_encoder_epochs=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.motion_estimator, self.temporal_loader, self.pseudo_loader = motion_estimator, temporal_loader, pseudo_loader
+        self.motion_weight, self.pseudo_weight, self.freeze_encoder_epochs = motion_weight, pseudo_weight, freeze_encoder_epochs
+
+    def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
+        for parameter in self.model.encoder.parameters():
+            parameter.requires_grad_(epoch > self.freeze_encoder_epochs)
+        self.model.train()
+        if self.motion_estimator is not None:
+            self.motion_estimator.eval()
+        temporal_batches = cycle(self.temporal_loader) if self.temporal_loader is not None else None
+        pseudo_batches = cycle(self.pseudo_loader) if self.pseudo_loader is not None else None
+        totals = {"train_loss": 0.0, "motion_loss": 0.0, "pseudo_loss": 0.0}
+        for batch in train_loader:
+            images, masks = batch["image"].to(self.device), batch["mask"].to(self.device)
+            self.optimizer.zero_grad(set_to_none=True)
+            with autocast(enabled=self.mixed_precision):
+                total_loss = self.criterion(self.model(images), masks)
+                motion_loss = pseudo_loss = None
+                if temporal_batches is not None:
+                    temporal = next(temporal_batches)
+                    frame_t, frame_t1 = temporal["frame_t"].to(self.device), temporal["frame_t1"].to(self.device)
+                    with torch.no_grad():
+                        flow = self.motion_estimator(frame_t, frame_t1)["flow"]
+                    probs_t, probs_t1 = F.softmax(self.model(frame_t), dim=1), F.softmax(self.model(frame_t1), dim=1)
+                    motion_loss = F.mse_loss(self.motion_estimator.transformer(probs_t, flow), probs_t1)
+                    total_loss = total_loss + self.motion_weight * motion_loss
+                if pseudo_batches is not None:
+                    pseudo = next(pseudo_batches)
+                    pseudo_targets = pseudo["pseudo_label"].to(self.device)
+                    if (pseudo_targets >= 0).any():
+                        pseudo_loss = F.cross_entropy(self.model(pseudo["image"].to(self.device)), pseudo_targets, ignore_index=-1)
+                        total_loss = total_loss + self.pseudo_weight * pseudo_loss
+                if self.scaler is not None:
+                    self.scaler.scale(total_loss).backward(); self.scaler.step(self.optimizer); self.scaler.update()
+                else:
+                    total_loss.backward(); self.optimizer.step()
+            totals["train_loss"] += float(total_loss.detach())
+            totals["motion_loss"] += float(motion_loss.detach()) if motion_loss is not None else 0.0
+            totals["pseudo_loss"] += float(pseudo_loss.detach()) if pseudo_loss is not None else 0.0
+        return {key: value / max(len(train_loader), 1) for key, value in totals.items()}
+
+
+def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, device: torch.device, ssl_checkpoint=None, resume=None, run_id=None, epochs_override=None, batch_size_override=None, smoke_test=False) -> Dict[str, Any]:
+    variant, data_cfg, opt_cfg, loss_cfg, log_cfg = config["variants"][mode], config["data"], config["optimization"], config["loss"], config["logging"]
+    train_split, val_split = data_cfg["subsets"][label_fraction], data_cfg["val_split"]
+    train_patients, val_patients = _read_patient_ids(train_split), _read_patient_ids(val_split)
+    if train_patients & val_patients:
+        raise ValueError("Configured labeled train and validation patient splits overlap.")
+    train_dataset = ACDCSegDataset(data_cfg["processed_dir"], train_split, transform=get_train_transforms())
+    val_dataset = ACDCSegDataset(data_cfg["processed_dir"], val_split, transform=get_val_transforms())
+    if set(train_dataset.get_patient_ids()) & set(val_dataset.get_patient_ids()):
+        raise ValueError("Dataset indexing found train/validation patient leakage.")
+    if not len(train_dataset) or not len(val_dataset):
+        raise ValueError("Fine-tuning requires non-empty labeled train and validation datasets.")
+    if smoke_test:
+        # Exercise the exact training/validation/checkpoint path on one batch
+        # per split without turning a local CPU verification into an experiment.
+        train_dataset = Subset(train_dataset, range(min(2, len(train_dataset))))
+        val_dataset = Subset(val_dataset, range(min(2, len(val_dataset))))
+    batch_size, epochs = batch_size_override or opt_cfg.get("batch_size", 8), epochs_override or opt_cfg.get("epochs", 200)
+    loader_args = {"batch_size": batch_size, "num_workers": data_cfg.get("num_workers", 0), "pin_memory": device.type == "cuda"}
+    train_loader, val_loader = DataLoader(train_dataset, shuffle=True, **loader_args), DataLoader(val_dataset, shuffle=False, **loader_args)
+    model, motion = build_experiment_model(config, mode, ssl_checkpoint, device)
+    temporal_loader = None
+    if motion is not None:
+        temporal = ACDCTemporalDataset(data_cfg["processed_dir"], data_cfg["subsets"][100])
+        if not len(temporal):
+            raise ValueError("Motion regularization requires temporal pairs from training patients.")
+        temporal_loader = DataLoader(temporal, shuffle=True, **loader_args)
+    pseudo_loader = None
+    if variant.get("use_pseudo_labels", False):
+        pseudo_loader = DataLoader(load_pseudo_dataset(config, label_fraction, _read_patient_ids(data_cfg["subsets"][100]), get_train_transforms()), shuffle=True, **loader_args)
+    run_id = run_id or f"{mode}_{label_fraction}pct_seed{seed}"
+    checkpoint_dir, results_dir = Path(log_cfg["checkpoint_dir"]) / run_id, Path(log_cfg["results_dir"]) / run_id
+    results_dir.mkdir(parents=True, exist_ok=True)
+    optimizer = torch.optim.AdamW([{"params": model.decoder.parameters(), "lr": float(opt_cfg.get("lr_decoder", 1e-4))}, {"params": model.encoder.parameters(), "lr": float(opt_cfg.get("lr_encoder", 1e-5))}], weight_decay=float(opt_cfg.get("weight_decay", 1e-5)))
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if opt_cfg.get("scheduler", "cosine") == "cosine" else None
+    criterion = DiceCELoss(num_classes=data_cfg.get("num_classes", 4), dice_weight=loss_cfg.get("dice_weight", 1.0), ce_weight=loss_cfg.get("ce_weight", 1.0), include_background=loss_cfg.get("include_background", False))
+    trainer = FineTuneExperimentTrainer(model=model, optimizer=optimizer, criterion=criterion, device=device, scheduler=scheduler, mixed_precision=opt_cfg.get("mixed_precision", True), checkpoint_dir=str(checkpoint_dir), log_dir=str(results_dir / "logs"), experiment_name=run_id, motion_estimator=motion, temporal_loader=temporal_loader, pseudo_loader=pseudo_loader, motion_weight=float(loss_cfg.get("motion_weight", 0.1)), pseudo_weight=float(loss_cfg.get("pseudo_weight", 0.25)), freeze_encoder_epochs=int(variant.get("freeze_encoder_epochs", 0)))
+    if resume:
+        trainer.load_checkpoint(resume)
+    metadata = {"run_id": run_id, "mode": mode, "label_fraction": label_fraction, "seed": seed, "device": str(device), "train_patients": sorted(train_patients), "validation_patients": sorted(val_patients), "ssl_checkpoint": ssl_checkpoint or variant.get("ssl_checkpoint"), "motion_checkpoint": variant.get("motion_checkpoint"), "uses_pseudo_labels": variant.get("use_pseudo_labels", False), "pseudo_label_source": str(Path(log_cfg.get("pseudo_labels_dir", "results/pseudo_labels")) / f"{label_fraction}pct") if variant.get("use_pseudo_labels", False) else None, "robustness": {"status": "not_run", "config": config.get("robustness", {})}, "parameters": count_parameters(model)}
+    (results_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    trainer.train(train_loader, val_loader, n_epochs=epochs, early_stopping_patience=int(opt_cfg.get("early_stopping_patience", 30)), compute_metrics_fn=compute_val_metrics_wrapper, monitor_metric="Mean_Dice")
+    summary = {**metadata, "status": "complete", "best_metric": trainer.best_metric, "best_epoch": trainer.best_epoch, "history_file": str(checkpoint_dir / f"{run_id}_history.json")}
+    (results_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    ExperimentRegistry(log_cfg["registry_file"]).register(run_id, summary)
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Patient-isolated limited-label fine-tuning runner")
+    parser.add_argument("--config", default="configs/experiments.yaml")
+    parser.add_argument("--mode", default="supervised", choices=["supervised", "ssl_finetune", "ssl_motion", "ssl_pseudo", "full_pipeline", "ssl_motion_pseudo"])
+    parser.add_argument("--label-fraction", type=int, default=100, choices=[10, 25, 50, 100])
+    parser.add_argument("--device", default="auto"); parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--ssl-checkpoint", default=None); parser.add_argument("--resume", default=None)
+    parser.add_argument("--run-id", default=None); parser.add_argument("--epochs", type=int, default=None); parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--smoke-test", action="store_true", help="Run one CPU train/validation batch and save isolated smoke artifacts")
     args = parser.parse_args()
-    
-    config_path = Path(args.config)
-    if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
-        
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-        
-    config['project']['seed'] = args.seed
-    set_seed(args.seed)
-    
-    device = get_device(args.device) if not args.smoke_test else torch.device("cpu")
-    
-    if args.smoke_test:
-        run_experiment_smoke_test(
-            config=config,
-            mode=args.mode,
-            label_fraction=args.label_fraction,
-            device=device,
-        )
-        return
-        
-    # Guard against accidental training on development machine
-    if device.type == 'cpu':
-        print("\n" + "="*70)
-        print("COMPUTE CONSTRAINT WARNING: Full experiment requested on CPU.")
-        print("Per project specifications, actual experiments run on the separate GPU system.")
-        print("Use --smoke-test for lightweight development verification.")
-        print("="*70 + "\n")
-        return
-        
-    print(f"\nExecuting Experiment: [{args.mode.upper()}] with [{args.label_fraction}%] labels on {device} (TRAINING MACHINE ONLY)...")
-    # Training loop would be executed here on the separate GPU machine
+    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    seed = args.seed if args.seed is not None else int(config["project"].get("seed", 42))
+    set_seed(seed)
+    device = torch.device("cpu") if args.smoke_test else get_device(args.device)
+    run_id = args.run_id or (f"{args.mode}_{args.label_fraction}pct_seed{seed}_smoke" if args.smoke_test else None)
+    epochs = 1 if args.smoke_test else args.epochs
+    batch_size = 2 if args.smoke_test else args.batch_size
+    print(json.dumps(run_experiment(config, args.mode, args.label_fraction, seed, device, args.ssl_checkpoint, args.resume, run_id, epochs, batch_size, args.smoke_test), indent=2))
 
 
 if __name__ == "__main__":

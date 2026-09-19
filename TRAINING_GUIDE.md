@@ -215,10 +215,20 @@ python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cuda \
 # ========================================================
 
 # Full Proposed Framework across all 4 label fractions
+# Prerequisite: generate pseudo labels for the same fraction with a teacher
+# trained on that fraction (Step 5), then run the corresponding command.
 python src/experiment_runner.py --mode full_pipeline --label-fraction 10 --device cuda
 python src/experiment_runner.py --mode full_pipeline --label-fraction 25 --device cuda
 python src/experiment_runner.py --mode full_pipeline --label-fraction 50 --device cuda
 python src/experiment_runner.py --mode full_pipeline --label-fraction 100 --device cuda
+
+# CPU-only implementation check: one train and validation batch, isolated
+# under a *_smoke run ID. It requires preprocessed data but no GPU.
+python src/experiment_runner.py --mode supervised --label-fraction 10 --smoke-test
+
+# Resume an interrupted run from its run-specific latest checkpoint.
+python src/experiment_runner.py --mode full_pipeline --label-fraction 10 --device cuda \
+  --resume checkpoints/experiments/full_pipeline_10pct_seed42/full_pipeline_10pct_seed42_latest.pth
 ```
 
 ### STEP 7: Five-Variant Component Ablation Study (10% Labels)
@@ -271,7 +281,7 @@ The following table details how model weights flow across training stages:
 | **SSL Pretraining** | `src/ssl.py` | `checkpoints/ssl/ssl_encoder_best.pth` | `src/experiment_runner.py` | `--ssl-checkpoint` or `configs/experiments.yaml` |
 | **Motion Pretraining** | `src/motion.py` | `checkpoints/motion/motion_model_best.pth` | `src/experiment_runner.py` | `configs/experiments.yaml:motion_checkpoint` |
 | **Baseline Segmentation** | `src/train.py` | `checkpoints/baseline_unet_best.pth` | `src/pseudo_labels.py` | `configs/pseudo_labels.yaml:checkpoint` |
-| **Fine-Tuning Runs** | `src/experiment_runner.py` | `checkpoints/experiments/{mode}_{frac}pct_best.pth` | `src/metrics.py` / `src/aggregate_results.py` | Registry tracking |
+| **Fine-Tuning Runs** | `src/experiment_runner.py` | `checkpoints/experiments/{mode}_{frac}pct_seed{seed}/{mode}_{frac}pct_seed{seed}_{latest,best,final}.pth` | `src/metrics.py` / `src/aggregate_results.py` | `--resume` / registry tracking |
 
 ---
 
