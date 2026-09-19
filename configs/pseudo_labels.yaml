@@ -41,10 +41,16 @@ filtering:
   ignore_index: -1
 
 model:
-  checkpoint: "checkpoints/baseline_unet_best.pth"  # Source model for generating predictions
+  # Set by --teacher-checkpoint. It must match the requested label fraction;
+  # using a 100%-label teacher in a low-label experiment leaks supervision.
+  checkpoint: null
+  motion_checkpoint: "checkpoints/motion/motion_model_best.pth"
   in_channels: 1
   num_classes: 4
   encoder_channels: [32, 64, 128, 256]
+
+generation:
+  batch_size: 8
 
 logging:
   output_dir: "results/pseudo_labels"

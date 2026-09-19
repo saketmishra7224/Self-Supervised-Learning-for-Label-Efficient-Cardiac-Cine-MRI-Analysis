@@ -47,7 +47,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from src.motion import SpatialTransformer
+from src.motion import MotionEstimator, SpatialTransformer
+from src.dataset import ACDCTemporalDataset
+from src.segmentation_model import build_segmentation_model
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +359,10 @@ class PseudoLabelGenerator:
                 - filtered_labels: (B, H, W) with ignore_index for rejected
                 - accept_mask: (B, H, W) binary mask (1=accepted)
         """
-        images = batch['image'].to(self.device)
+        # Temporal samples expose frame_t; conventional segmentation samples
+        # expose image. Supporting both keeps the generation stage compatible
+        # with motion-aware and confidence-only operation.
+        images = batch.get('image', batch.get('frame_t')).to(self.device)
         logits = self.model(images)
         probs = F.softmax(logits, dim=1)
         raw_pseudo = torch.argmax(probs, dim=1)
@@ -448,6 +453,29 @@ class PseudoLabelDataset(Dataset):
         return sample
 
 
+class UnlabeledTemporalPseudoDataset(Dataset):
+    """Training-only intermediate cine frames, each paired with its successor.
+
+    The wrapper deliberately excludes ED/ES frames with ground truth. This
+    prevents pseudo labels from replacing known annotations and ensures neither
+    validation nor test patients enter teacher inference.
+    """
+
+    def __init__(self, processed_dir: str, train_split: str):
+        self.base = ACDCTemporalDataset(processed_dir, train_split)
+        self.indices = []
+        for index, (path_t, _) in enumerate(self.base.pairs):
+            with np.load(path_t, allow_pickle=True) as item:
+                if 'mask' in item and np.all(item['mask'] == -1):
+                    self.indices.append(index)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        return self.base[self.indices[index]]
+
+
 # ---------------------------------------------------------------------------
 # 6. Metadata Serialization Helper
 # ---------------------------------------------------------------------------
@@ -467,6 +495,117 @@ def save_pseudo_label_metadata(
     print(f"Pseudo-label metadata saved to: {out_path}")
 
 
+def load_teacher_model(config: Dict, device: torch.device) -> nn.Module:
+    """Load the baseline checkpoint used as the pseudo-label teacher."""
+    checkpoint_value = config['model'].get('checkpoint')
+    if not checkpoint_value:
+        raise ValueError(
+            "A label-fraction-matched teacher checkpoint is required. "
+            "Pass --teacher-checkpoint from the supervised run for this fraction."
+        )
+    checkpoint_path = Path(checkpoint_value)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Teacher checkpoint not found: {checkpoint_path}. "
+            "Train the supervised baseline first, then set model.checkpoint."
+        )
+    model = build_segmentation_model(config).to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
+    model.load_state_dict(state_dict)
+    return model.eval()
+
+
+def load_motion_estimator(config: Dict, device: torch.device) -> Optional[MotionEstimator]:
+    """Load the trained motion dependency only when temporal filtering is enabled."""
+    if not config['filtering'].get('use_temporal_consistency', False):
+        return None
+    checkpoint_path = Path(config['model'].get('motion_checkpoint', 'checkpoints/motion/motion_model_best.pth'))
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Temporal filtering is enabled but motion checkpoint is missing: {checkpoint_path}. "
+            "Run motion pretraining, or set filtering.use_temporal_consistency to false."
+        )
+    estimator = MotionEstimator().to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    estimator.load_state_dict(checkpoint.get('model_state_dict', checkpoint))
+    return estimator.eval()
+
+
+def generate_pseudo_labels(config: Dict, device: torch.device, label_fraction: int) -> Dict[str, Union[int, float, str]]:
+    """Generate raw and confidence-filtered labels for unlabeled train frames."""
+    data_cfg, filter_cfg, log_cfg = config['data'], config['filtering'], config['logging']
+    dataset = UnlabeledTemporalPseudoDataset(data_cfg['processed_dir'], data_cfg['train_split'])
+    if len(dataset) == 0:
+        raise ValueError("No unlabeled intermediate training frames found. Run preprocessing and verify the training split.")
+    loader = DataLoader(
+        dataset,
+        batch_size=config.get('generation', {}).get('batch_size', 8),
+        shuffle=False,
+        num_workers=data_cfg.get('num_workers', 0),
+        pin_memory=device.type == 'cuda',
+    )
+    model = load_teacher_model(config, device)
+    motion_estimator = load_motion_estimator(config, device)
+    generator = PseudoLabelGenerator(
+        model=model,
+        device=device,
+        confidence_metric=filter_cfg.get('confidence_metric', 'max_probability'),
+        confidence_threshold=filter_cfg.get('confidence_threshold', 0.90),
+        entropy_threshold=filter_cfg.get('entropy_threshold', 0.25),
+        use_temporal_consistency=filter_cfg.get('use_temporal_consistency', False),
+        temporal_consistency_threshold=filter_cfg.get('temporal_consistency_threshold', 0.80),
+        ignore_index=filter_cfg.get('ignore_index', -1),
+        min_foreground_pixels=filter_cfg.get('min_foreground_pixels', 30),
+        motion_estimator=motion_estimator,
+    )
+    output_dir = Path(log_cfg['output_dir']) / f'{label_fraction}pct'
+    labels_dir = output_dir / 'labels'
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    records, accepted_pixels, total_pixels = [], 0, 0
+    for batch in tqdm(loader, desc='Generating pseudo-labels'):
+        outputs = generator.process_batch(batch)
+        raw = outputs['raw_pseudo_labels'].cpu().numpy().astype(np.int16)
+        filtered = outputs['filtered_labels'].cpu().numpy().astype(np.int16)
+        confidence = outputs['confidence'].cpu().numpy().astype(np.float32)
+        accepted = outputs['accept_mask'].cpu().numpy().astype(np.uint8)
+        for item_index in range(raw.shape[0]):
+            patient_id = batch['patient_id'][item_index]
+            slice_idx = int(batch['slice_idx'][item_index])
+            frame_idx = int(batch['frame_idx_t'][item_index])
+            filename = f"{patient_id}_frame{frame_idx:02d}_slice{slice_idx:02d}.npz"
+            np.savez_compressed(
+                labels_dir / filename,
+                raw_pseudo_label=raw[item_index],
+                filtered_pseudo_label=filtered[item_index],
+                confidence=confidence[item_index],
+                accept_mask=accepted[item_index],
+                patient_id=patient_id,
+                slice_idx=slice_idx,
+                frame_idx=frame_idx,
+            )
+            item_accepted = int(accepted[item_index].sum())
+            accepted_pixels += item_accepted
+            total_pixels += int(accepted[item_index].size)
+            records.append({'file': f'labels/{filename}', 'patient_id': patient_id, 'slice_idx': slice_idx, 'frame_idx': frame_idx, 'acceptance_rate': item_accepted / accepted[item_index].size})
+    manifest_path = output_dir / 'pseudo_label_index.json'
+    with open(manifest_path, 'w', encoding='utf-8') as handle:
+        json.dump(records, handle, indent=2)
+    metadata = {
+        'teacher_checkpoint': str(config['model']['checkpoint']),
+        'label_fraction': label_fraction,
+        'train_split': str(data_cfg['train_split']),
+        'samples_generated': len(records),
+        'acceptance_rate': accepted_pixels / max(total_pixels, 1),
+        'confidence_metric': filter_cfg.get('confidence_metric', 'max_probability'),
+        'confidence_threshold': filter_cfg.get('confidence_threshold', 0.90),
+        'uses_temporal_consistency': motion_estimator is not None,
+        'manifest': str(manifest_path),
+    }
+    save_pseudo_label_metadata(metadata, output_dir, log_cfg.get('metadata_file', 'pseudo_label_metadata.json'))
+    return metadata
+
+
 # ---------------------------------------------------------------------------
 # 7. CLI & Self-Test Entrypoint
 # ---------------------------------------------------------------------------
@@ -480,8 +619,8 @@ def main():
         help="Path to YAML configuration file"
     )
     parser.add_argument(
-        "--device", type=str, default="cpu",
-        help="Device to use ('cpu' or 'cuda')"
+        "--device", type=str, default=None,
+        help="Device override ('auto', 'cpu', or 'cuda')"
     )
     parser.add_argument(
         "--smoke-test", action="store_true",
@@ -490,6 +629,14 @@ def main():
     parser.add_argument(
         "--threshold", type=float, default=None,
         help="Override confidence threshold"
+    )
+    parser.add_argument(
+        "--teacher-checkpoint", type=str, default=None,
+        help="Supervised teacher checkpoint trained with this same label fraction"
+    )
+    parser.add_argument(
+        "--label-fraction", type=int, choices=[10, 25, 50, 100], default=None,
+        help="Label fraction used to train the teacher; required for leakage-safe output"
     )
     args = parser.parse_args()
     
@@ -502,6 +649,8 @@ def main():
         
     if args.threshold is not None:
         config['filtering']['confidence_threshold'] = args.threshold
+    if args.teacher_checkpoint is not None:
+        config['model']['checkpoint'] = args.teacher_checkpoint
         
     print(f"Loaded Pseudo-Label configuration from: {config_path}")
     print(f"Confidence metric:    {config['filtering']['confidence_metric']}")
@@ -548,6 +697,14 @@ def main():
         }
         save_pseudo_label_metadata(meta, config['logging']['output_dir'])
         print("--- Pseudo-Label Module Smoke Test PASSED ---")
+        return
+
+    requested_device = args.device or config.get('device', 'auto')
+    device = torch.device('cuda' if requested_device == 'auto' and torch.cuda.is_available() else 'cpu' if requested_device == 'auto' else requested_device)
+    if args.label_fraction is None:
+        raise ValueError('--label-fraction is required for real pseudo-label generation.')
+    metadata = generate_pseudo_labels(config, device, args.label_fraction)
+    print(f"Generated {metadata['samples_generated']:,} pseudo-labels with {metadata['acceptance_rate']:.2%} pixel acceptance.")
 
 
 if __name__ == "__main__":

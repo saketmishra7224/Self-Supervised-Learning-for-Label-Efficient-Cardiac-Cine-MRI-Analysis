@@ -194,12 +194,18 @@ python src/motion.py --config configs/motion.yaml --device cuda \
 *Generates high-confidence pseudo-segmentations on intermediate unlabeled cine frames.*
 ```bash
 # DEVELOPMENT / CPU TEST:
-python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cpu
+python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cpu --smoke-test
 
 # TRAINING MACHINE COMMAND:
-python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cuda
+python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cuda \
+  --label-fraction 10 \
+  --teacher-checkpoint checkpoints/experiments/supervised_10pct_best.pth
 ```
 - **Output Directory**: `results/pseudo_labels/`
+  - `labels/*.npz` contains both `raw_pseudo_label` and `filtered_pseudo_label`.
+  - `pseudo_label_index.json` is the fine-tuning manifest.
+  - Temporal confidence filtering requires both the baseline and motion checkpoints.
+  - The teacher must be trained on the same label fraction, otherwise the experiment leaks labels.
 
 ### STEP 6: Limited-Label Fine-Tuning Matrix
 *Fine-tunes the models under 10%, 25%, 50%, and 100% labeled patient regimes.*
