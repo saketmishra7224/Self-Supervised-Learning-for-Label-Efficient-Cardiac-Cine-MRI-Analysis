@@ -40,7 +40,8 @@ training:
   weight_decay: 1.0e-5
   scheduler: "cosine"
   mixed_precision: true
-  save_interval: 10
+  # Keep a current recovery point after every epoch for resumable Kaggle sessions.
+  save_interval: 1
 
 logging:
   checkpoint_dir: "checkpoints/motion"

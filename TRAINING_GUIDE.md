@@ -175,12 +175,20 @@ python src/ssl.py --config configs/ssl.yaml --device cuda
 *Pretrains SimpleFlowNet for unsupervised dense cardiac motion estimation.*
 ```bash
 # DEVELOPMENT / CPU TEST:
-python src/motion.py --config configs/motion.yaml --device cpu
+python src/motion.py --config configs/motion.yaml --device cpu --smoke-test
 
 # TRAINING MACHINE COMMAND:
 python src/motion.py --config configs/motion.yaml --device cuda
+
+# RESUME AFTER A KAGGLE SESSION:
+python src/motion.py --config configs/motion.yaml --device cuda \
+  --resume checkpoints/motion/motion_latest.pth
 ```
-- **Output Checkpoint**: `checkpoints/motion/motion_model_best.pth`
+- **Outputs**:
+  - `checkpoints/motion/motion_model_best.pth` — best weights for fine-tuning
+  - `checkpoints/motion/motion_latest.pth` — full recovery checkpoint
+  - `checkpoints/motion/motion_best_resume.pth` — full best-model recovery checkpoint
+  - `results/motion/motion_history.json` — per-epoch training/validation metrics
 
 ### STEP 5: Confidence-Filtered Pseudo-Label Generation
 *Generates high-confidence pseudo-segmentations on intermediate unlabeled cine frames.*

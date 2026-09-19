@@ -27,6 +27,9 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import argparse
+import json
+import random
+import time
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
@@ -36,6 +39,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
 
 from src.dataset import ACDCTemporalDataset
 
@@ -477,7 +482,169 @@ class MotionEstimator(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# 6. Diagnostic Visualization Helper
+# 6. Motion Training
+# ---------------------------------------------------------------------------
+
+def set_seed(seed: int = 42) -> None:
+    """Set deterministic random states for reproducible motion pretraining."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+class MotionTrainer:
+    """Train and resume SimpleFlowNet from complete motion checkpoints."""
+
+    def __init__(
+        self,
+        model: MotionEstimator,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        mixed_precision: bool = True,
+        checkpoint_dir: str = "checkpoints/motion",
+        output_dir: str = "results/motion",
+    ):
+        self.model = model.to(device)
+        self.optimizer = optimizer
+        self.device = device
+        self.scheduler = scheduler
+        self.mixed_precision = mixed_precision and device.type == "cuda"
+        self.scaler = GradScaler() if self.mixed_precision else None
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.output_dir = Path(output_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.start_epoch = 1
+        self.best_val_loss = float("inf")
+        self.history = {"epoch": [], "train_loss": [], "val_loss": [], "photo_loss": [], "smooth_loss": [], "lr": []}
+
+    def _run_epoch(self, loader: DataLoader, epoch: int, training: bool) -> Dict[str, float]:
+        self.model.train(training)
+        totals = {"total_loss": 0.0, "photo_loss": 0.0, "smooth_loss": 0.0}
+        iterator = tqdm(loader, desc=f"Epoch {epoch} [{'Train' if training else 'Val'}]", leave=False)
+        with torch.set_grad_enabled(training):
+            for batch in iterator:
+                frame_t = batch["frame_t"].to(self.device, non_blocking=True)
+                frame_t1 = batch["frame_t1"].to(self.device, non_blocking=True)
+                if training:
+                    self.optimizer.zero_grad(set_to_none=True)
+                with autocast(enabled=self.mixed_precision):
+                    outputs = self.model(frame_t, frame_t1)
+                    loss = outputs["total_loss"]
+                if training:
+                    if self.scaler is not None:
+                        self.scaler.scale(loss).backward()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        loss.backward()
+                        self.optimizer.step()
+                for key in totals:
+                    totals[key] += float(outputs[key].detach().item())
+                iterator.set_postfix(loss=f"{loss.detach().item():.4f}")
+        count = max(len(loader), 1)
+        return {key: value / count for key, value in totals.items()}
+
+    def _checkpoint_state(self, epoch: int) -> Dict:
+        state = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "history": self.history,
+            "best_val_loss": self.best_val_loss,
+            "python_random_state": random.getstate(),
+            "numpy_random_state": np.random.get_state(),
+            "torch_random_state": torch.get_rng_state(),
+        }
+        if self.scheduler is not None:
+            state["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.scaler is not None:
+            state["scaler_state_dict"] = self.scaler.state_dict()
+        if torch.cuda.is_available():
+            state["cuda_random_states"] = torch.cuda.get_rng_state_all()
+        return state
+
+    def save_checkpoint(self, epoch: int, is_best: bool) -> None:
+        state = self._checkpoint_state(epoch)
+        torch.save(state, self.checkpoint_dir / "motion_latest.pth")
+        if is_best:
+            torch.save(state, self.checkpoint_dir / "motion_best_resume.pth")
+            # This stable, weights-only file is the dependency consumed by the
+            # later fine-tuning stage.
+            torch.save(self.model.state_dict(), self.checkpoint_dir / "motion_model_best.pth")
+
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        if "model_state_dict" not in checkpoint:
+            raise ValueError("A resume checkpoint must include model_state_dict; use motion_latest.pth or motion_best_resume.pth.")
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if self.scaler is not None and "scaler_state_dict" in checkpoint:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        for key, restore in (("python_random_state", random.setstate), ("numpy_random_state", np.random.set_state), ("torch_random_state", torch.set_rng_state)):
+            if key in checkpoint:
+                restore(checkpoint[key])
+        if torch.cuda.is_available() and "cuda_random_states" in checkpoint:
+            torch.cuda.set_rng_state_all(checkpoint["cuda_random_states"])
+        self.start_epoch = checkpoint["epoch"] + 1
+        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        self.history = checkpoint.get("history", self.history)
+        print(f"Resuming motion training from epoch {self.start_epoch} ({checkpoint_path})")
+
+    def train(self, train_loader: DataLoader, val_loader: DataLoader, n_epochs: int, save_interval: int = 1) -> Dict:
+        if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0:
+            raise ValueError("Motion training requires non-empty temporal train and validation datasets.")
+        for epoch in range(self.start_epoch, n_epochs + 1):
+            started = time.time()
+            train_metrics = self._run_epoch(train_loader, epoch, training=True)
+            val_metrics = self._run_epoch(val_loader, epoch, training=False)
+            if self.scheduler is not None:
+                self.scheduler.step()
+            is_best = val_metrics["total_loss"] < self.best_val_loss
+            if is_best:
+                self.best_val_loss = val_metrics["total_loss"]
+            self.history["epoch"].append(epoch)
+            self.history["train_loss"].append(train_metrics["total_loss"])
+            self.history["val_loss"].append(val_metrics["total_loss"])
+            self.history["photo_loss"].append(val_metrics["photo_loss"])
+            self.history["smooth_loss"].append(val_metrics["smooth_loss"])
+            self.history["lr"].append(float(self.optimizer.param_groups[0]["lr"]))
+            if epoch % save_interval == 0 or is_best or epoch == n_epochs:
+                self.save_checkpoint(epoch, is_best=is_best)
+            print(f"Epoch {epoch:3d}/{n_epochs} | train={train_metrics['total_loss']:.5f} | val={val_metrics['total_loss']:.5f} | photo={val_metrics['photo_loss']:.5f} | smooth={val_metrics['smooth_loss']:.5f} | {time.time() - started:.1f}s{' [BEST]' if is_best else ''}")
+        with open(self.output_dir / "motion_history.json", "w", encoding="utf-8") as handle:
+            json.dump(self.history, handle, indent=2)
+        return self.history
+
+
+def create_motion_pipeline(config: Dict, device_override: Optional[str] = None):
+    """Build the isolated train/validation motion-pretraining pipeline."""
+    set_seed(config.get("random_seed", 42))
+    device_name = device_override or config.get("device", "auto")
+    device = torch.device("cuda" if device_name == "auto" and torch.cuda.is_available() else "cpu" if device_name == "auto" else device_name)
+    data_cfg, model_cfg, loss_cfg = config["data"], config["motion_model"], config["loss"]
+    training_cfg, logging_cfg = config["training"], config["logging"]
+    model = MotionEstimator(channels=model_cfg.get("channels"), align_corners=config["warping"].get("align_corners", True), padding_mode=config["warping"].get("padding_mode", "border"), photometric_weight=loss_cfg.get("photometric_weight", 1.0), smoothness_weight=loss_cfg.get("smoothness_weight", 0.1))
+    train_dataset = ACDCTemporalDataset(data_cfg["processed_dir"], data_cfg["train_split"])
+    val_dataset = ACDCTemporalDataset(data_cfg["processed_dir"], data_cfg["val_split"])
+    loader_args = {"batch_size": training_cfg.get("batch_size", 16), "num_workers": data_cfg.get("num_workers", 0), "pin_memory": device.type == "cuda"}
+    train_loader = DataLoader(train_dataset, shuffle=True, drop_last=False, **loader_args)
+    val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_args)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(training_cfg.get("learning_rate", 1e-4)), weight_decay=float(training_cfg.get("weight_decay", 1e-5)))
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=training_cfg.get("epochs", 50)) if training_cfg.get("scheduler") == "cosine" else None
+    trainer = MotionTrainer(model, optimizer, device, scheduler=scheduler, mixed_precision=training_cfg.get("mixed_precision", True), checkpoint_dir=logging_cfg.get("checkpoint_dir", "checkpoints/motion"), output_dir=logging_cfg.get("output_dir", "results/motion"))
+    return train_loader, val_loader, trainer, device
+
+
+# ---------------------------------------------------------------------------
+# 7. Diagnostic Visualization Helper
 # ---------------------------------------------------------------------------
 
 def create_motion_diagnostic_figure(
@@ -558,13 +725,19 @@ def main():
         help="Path to YAML configuration file"
     )
     parser.add_argument(
-        "--device", type=str, default="cpu",
-        help="Device to use ('cpu' or 'cuda')"
+        "--device", type=str, default=None,
+        help="Device override ('auto', 'cpu', or 'cuda')"
     )
     parser.add_argument(
         "--smoke-test", action="store_true",
         help="Run lightweight CPU smoke test verifying flow, warping, and loss"
     )
+    parser.add_argument(
+        "--resume", type=str, default=None,
+        help="Resume from a full motion checkpoint (motion_latest.pth or motion_best_resume.pth)"
+    )
+    parser.add_argument("--epochs", type=int, default=None, help="Override total epoch count")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     args = parser.parse_args()
     
     config_path = Path(args.config)
@@ -573,8 +746,14 @@ def main():
     
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    if args.epochs is not None:
+        config['training']['epochs'] = args.epochs
+    if args.batch_size is not None:
+        config['training']['batch_size'] = args.batch_size
     
-    device = torch.device(args.device)
+    requested_device = args.device or config.get('device', 'auto')
+    device = torch.device('cuda' if requested_device == 'auto' and torch.cuda.is_available() else 'cpu' if requested_device == 'auto' else requested_device)
     print(f"Loading Motion Module on device: {device}")
     
     model = MotionEstimator(
@@ -613,6 +792,20 @@ def main():
         print(f"Gradient flow verified: {has_grads}")
         assert has_grads, "Missing gradients in SimpleFlowNet!"
         print("--- Motion Module Smoke Test PASSED ---")
+        return
+
+    train_loader, val_loader, trainer, pipeline_device = create_motion_pipeline(
+        config, device_override=args.device
+    )
+    if args.resume:
+        trainer.load_checkpoint(args.resume)
+    print(f"Starting motion pretraining on {pipeline_device}: {len(train_loader.dataset):,} train pairs, {len(val_loader.dataset):,} validation pairs")
+    trainer.train(
+        train_loader,
+        val_loader,
+        n_epochs=config['training'].get('epochs', 50),
+        save_interval=config['training'].get('save_interval', 1),
+    )
 
 
 if __name__ == "__main__":
