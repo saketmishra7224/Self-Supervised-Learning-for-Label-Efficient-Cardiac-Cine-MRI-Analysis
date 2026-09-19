@@ -26,6 +26,10 @@ import time
 import json
 import random
 import argparse
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on some non-Unix hosts
+    resource = None
 import yaml
 from pathlib import Path
 from typing import Dict, Optional, Callable, List, Tuple
@@ -171,6 +175,8 @@ class Trainer:
         self.history = {
             'train_loss': [], 'val_loss': [],
             'val_dice': [], 'lr': [],
+            'epoch_seconds': [], 'train_samples_per_second': [],
+            'peak_vram_mb': [], 'peak_ram_mb': [],
         }
         # Training state is deliberately kept on the trainer so a resumed run
         # continues from the next epoch rather than silently replaying epoch 1.
@@ -309,6 +315,8 @@ class Trainer:
         
         for epoch in range(self.start_epoch, n_epochs + 1):
             t_start = time.time()
+            if self.device.type == 'cuda':
+                torch.cuda.reset_peak_memory_stats(self.device)
             
             # Train
             train_metrics = self.train_epoch(train_loader, epoch)
@@ -363,6 +371,18 @@ class Trainer:
 
             self.best_metric = best_metric
             self.best_epoch = best_epoch
+
+            elapsed = time.time() - t_start
+            self.history['epoch_seconds'].append(elapsed)
+            self.history['train_samples_per_second'].append(len(train_loader.dataset) / max(elapsed, 1e-8))
+            self.history['peak_vram_mb'].append(
+                torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
+                if self.device.type == 'cuda' else 0.0
+            )
+            self.history['peak_ram_mb'].append(
+                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                if resource is not None else None
+            )
             
             # Save a complete, resumable state after every completed epoch.
             # This is intentional for short Kaggle sessions: ``latest`` is the
@@ -372,7 +392,6 @@ class Trainer:
                 self._save_checkpoint(epoch, val_metrics, is_best=True)
             
             # Print progress
-            elapsed = time.time() - t_start
             status = " ★ BEST" if is_best else ""
             print(
                 f"Epoch {epoch:3d}/{n_epochs} | "
