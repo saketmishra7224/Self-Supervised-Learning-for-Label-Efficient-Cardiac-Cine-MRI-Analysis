@@ -172,6 +172,11 @@ class Trainer:
             'train_loss': [], 'val_loss': [],
             'val_dice': [], 'lr': [],
         }
+        # Training state is deliberately kept on the trainer so a resumed run
+        # continues from the next epoch rather than silently replaying epoch 1.
+        self.start_epoch = 1
+        self.best_metric = None
+        self.best_epoch = 0
     
     def train_epoch(
         self,
@@ -288,8 +293,10 @@ class Trainer:
             mode="max" if "dice" in monitor_metric.lower() else "min",
         )
         
-        best_metric = -float('inf') if "dice" in monitor_metric.lower() else float('inf')
-        best_epoch = 0
+        best_metric = self.best_metric
+        if best_metric is None:
+            best_metric = -float('inf') if "dice" in monitor_metric.lower() else float('inf')
+        best_epoch = self.best_epoch
         
         print(f"\n{'='*60}")
         print(f"Training: {self.experiment_name}")
@@ -300,7 +307,7 @@ class Trainer:
         print(f"Monitor: {monitor_metric}")
         print(f"{'='*60}\n")
         
-        for epoch in range(1, n_epochs + 1):
+        for epoch in range(self.start_epoch, n_epochs + 1):
             t_start = time.time()
             
             # Train
@@ -346,8 +353,14 @@ class Trainer:
                     best_metric = current_metric
                     best_epoch = epoch
                     is_best = True
+
+            self.best_metric = best_metric
+            self.best_epoch = best_epoch
             
-            # Save checkpoint
+            # Save a complete, resumable state after every completed epoch.
+            # This is intentional for short Kaggle sessions: ``latest`` is the
+            # recovery point, while ``best`` remains the model-selection point.
+            self._save_checkpoint(epoch, val_metrics, tag="latest")
             if is_best:
                 self._save_checkpoint(epoch, val_metrics, is_best=True)
             
@@ -392,10 +405,21 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'metrics': metrics,
             'history': self.history,
+            'best_metric': self.best_metric,
+            'best_epoch': self.best_epoch,
+            'python_random_state': random.getstate(),
+            'numpy_random_state': np.random.get_state(),
+            'torch_random_state': torch.get_rng_state(),
         }
         
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+
+        if self.scaler is not None:
+            checkpoint['scaler_state_dict'] = self.scaler.state_dict()
+
+        if torch.cuda.is_available():
+            checkpoint['cuda_random_states'] = torch.cuda.get_rng_state_all()
         
         if is_best:
             path = self.checkpoint_dir / f"{self.experiment_name}_best.pth"
@@ -412,7 +436,23 @@ class Trainer:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+        if self.scaler is not None and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        if 'python_random_state' in checkpoint:
+            random.setstate(checkpoint['python_random_state'])
+        if 'numpy_random_state' in checkpoint:
+            np.random.set_state(checkpoint['numpy_random_state'])
+        if 'torch_random_state' in checkpoint:
+            torch.set_rng_state(checkpoint['torch_random_state'])
+        if torch.cuda.is_available() and 'cuda_random_states' in checkpoint:
+            torch.cuda.set_rng_state_all(checkpoint['cuda_random_states'])
+
+        self.start_epoch = checkpoint['epoch'] + 1
+        self.best_metric = checkpoint.get('best_metric')
+        self.best_epoch = checkpoint.get('best_epoch', 0)
+        self.history = checkpoint.get('history', self.history)
+        print(f"Resuming from epoch {self.start_epoch} (checkpoint: {checkpoint_path})")
         return checkpoint
 
 
