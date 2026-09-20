@@ -226,6 +226,52 @@ def process_single_patient_volume(
     }
 
 
+def load_canonical_splits(splits_dir: Path, available_patient_ids: List[str]) -> Dict[str, List[str]]:
+    """Load and validate the repository's fixed patient-level split artifacts."""
+    split_specs = {
+        "train": ("train_patients.txt", 70),
+        "val": ("val_patients.txt", 10),
+        "test": ("test_patients.txt", 20),
+        "labeled_10": ("labeled_10.txt", 7),
+        "labeled_25": ("labeled_25.txt", 17),
+        "labeled_50": ("labeled_50.txt", 35),
+        "labeled_100": ("labeled_100.txt", 70),
+    }
+
+    splits = {}
+    for name, (filename, expected_count) in split_specs.items():
+        path = splits_dir / filename
+        if not path.exists():
+            raise FileNotFoundError(f"Required canonical split file is missing: {path}")
+        with open(path, "r") as f:
+            patient_ids = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        if len(patient_ids) != expected_count:
+            raise ValueError(f"{path} has {len(patient_ids)} patients; expected {expected_count}")
+        if len(set(patient_ids)) != len(patient_ids):
+            raise ValueError(f"{path} contains duplicate patient IDs")
+        splits[name] = patient_ids
+
+    train_set = set(splits["train"])
+    val_set = set(splits["val"])
+    test_set = set(splits["test"])
+    available_set = set(available_patient_ids)
+
+    if train_set & val_set or train_set & test_set or val_set & test_set:
+        raise ValueError("Canonical train/val/test splits overlap; refusing to preprocess")
+    if train_set | val_set | test_set != available_set:
+        raise ValueError("Canonical train/val/test splits do not exactly cover the raw patient cohort")
+
+    labeled_sets = [set(splits[name]) for name in ("labeled_10", "labeled_25", "labeled_50", "labeled_100")]
+    if labeled_sets[-1] != train_set:
+        raise ValueError("labeled_100.txt must exactly match train_patients.txt")
+    if not all(labeled_sets[i] <= labeled_sets[i + 1] for i in range(len(labeled_sets) - 1)):
+        raise ValueError("Canonical labeled subsets must be nested: 10% <= 25% <= 50% <= 100%")
+    if not all(label_set <= train_set for label_set in labeled_sets):
+        raise ValueError("Canonical labeled subsets must be contained in the training split")
+
+    return splits
+
+
 def run_preprocessing(config_path: str = "configs/preprocessing_config.yaml") -> Dict[str, Any]:
     """Execute complete parallel ACDC preprocessing pipeline."""
     sys.stdout.reconfigure(line_buffering=True)
@@ -367,133 +413,23 @@ def run_preprocessing(config_path: str = "configs/preprocessing_config.yaml") ->
         print(f"     - Average raw volume mean: {np.mean(raw_means):.2f} +/- {np.std(raw_means):.2f}")
         print(f"     - Average norm volume mean: {np.mean(norm_means):.4f}, std: {np.mean(norm_stds):.4f}")
 
-    # 3. Patient-Level Train / Val / Test Splitting
-    print("\n--- Creating Stratified Patient-Level Splits ---")
+    # 3. Load the fixed patient-level splits. They are experimental inputs and
+    # must never be regenerated or overwritten during image preprocessing.
+    print("\n--- Validating Canonical Patient-Level Splits ---")
     pids = sorted(patient_stats.keys())
-    pathology_labels = [patient_stats[p]["pathology"] for p in pids]
-    
-    # 70% Train, 10% Val, 20% Test
-    sss_test = StratifiedShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-    train_val_idx, test_idx = next(sss_test.split(pids, pathology_labels))
-    
-    train_val_pids = [pids[i] for i in train_val_idx]
-    train_val_labels = [pathology_labels[i] for i in train_val_idx]
-    test_pids = sorted([pids[i] for i in test_idx])
-    
-    sss_val = StratifiedShuffleSplit(n_splits=1, test_size=0.125, random_state=42)
-    train_sub_idx, val_sub_idx = next(sss_val.split(train_val_pids, train_val_labels))
-    
-    train_pids = sorted([train_val_pids[i] for i in train_sub_idx])
-    val_pids = sorted([train_val_pids[i] for i in val_sub_idx])
-    
-    assert len(set(train_pids).intersection(set(val_pids))) == 0, "Leakage between Train and Val!"
-    assert len(set(train_pids).intersection(set(test_pids))) == 0, "Leakage between Train and Test!"
-    assert len(set(val_pids).intersection(set(test_pids))) == 0, "Leakage between Val and Test!"
-    assert len(train_pids) + len(val_pids) + len(test_pids) == len(pids), "Patient count mismatch in split!"
+    canonical_splits = load_canonical_splits(splits_dir, pids)
+    train_pids = canonical_splits["train"]
+    val_pids = canonical_splits["val"]
+    test_pids = canonical_splits["test"]
     
     def count_pathologies(p_list):
         return dict(Counter([patient_stats[p]["pathology"] for p in p_list]))
         
-    split_info = {
-        "metadata": {
-            "total_patients": len(pids),
-            "train_count": len(train_pids),
-            "val_count": len(val_pids),
-            "test_count": len(test_pids),
-            "random_seed": 42,
-            "train_ratio": 0.70,
-            "val_ratio": 0.10,
-            "test_ratio": 0.20,
-        },
-        "pathology_distribution": {
-            "train": count_pathologies(train_pids),
-            "val": count_pathologies(val_pids),
-            "test": count_pathologies(test_pids),
-        },
-        "train": train_pids,
-        "val": val_pids,
-        "test": test_pids
-    }
-    
-    # Save standard .txt split files (one patient ID per line)
-    with open(splits_dir / "train_patients.txt", "w") as f:
-        f.write("\n".join(train_pids) + "\n")
-    with open(splits_dir / "val_patients.txt", "w") as f:
-        f.write("\n".join(val_pids) + "\n")
-    with open(splits_dir / "test_patients.txt", "w") as f:
-        f.write("\n".join(test_pids) + "\n")
-        
-    # Save split_metadata.json with all required details
-    split_metadata = {
-        "dataset_source": "Automated Cardiac Diagnosis Challenge (ACDC) MICCAI 2017",
-        "dataset_version": "1.0",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
-        "random_seed": 42,
-        "stratify_by": "pathology",
-        "total_patients": len(pids),
-        "split_summary": {
-            "train": {
-                "num_patients": len(train_pids),
-                "percentage": round(len(train_pids) / len(pids) * 100.0, 2),
-                "pathology_distribution": count_pathologies(train_pids)
-            },
-            "val": {
-                "num_patients": len(val_pids),
-                "percentage": round(len(val_pids) / len(pids) * 100.0, 2),
-                "pathology_distribution": count_pathologies(val_pids)
-            },
-            "test": {
-                "num_patients": len(test_pids),
-                "percentage": round(len(test_pids) / len(pids) * 100.0, 2),
-                "pathology_distribution": count_pathologies(test_pids)
-            }
-        },
-        "patient_ids": {
-            "train": train_pids,
-            "val": val_pids,
-            "test": test_pids
-        },
-        "verification": {
-            "no_patient_overlap": True,
-            "train_val_overlap_count": len(set(train_pids).intersection(set(val_pids))),
-            "train_test_overlap_count": len(set(train_pids).intersection(set(test_pids))),
-            "val_test_overlap_count": len(set(val_pids).intersection(set(test_pids))),
-            "all_patients_accounted_for": len(train_pids) + len(val_pids) + len(test_pids) == len(pids),
-            "patient_level_integrity": "All 2D/2D+t slices and temporal frames strictly belong to the patient split. No slice or frame leakage."
-        }
-    }
-    with open(splits_dir / "split_metadata.json", "w") as f:
-        json.dump(split_metadata, f, indent=2)
-
-    with open(splits_dir / "patient_splits.json", "w") as f:
-        json.dump(split_info, f, indent=2)
-    with open(splits_dir / "train.json", "w") as f:
-        json.dump({"patients": train_pids}, f, indent=2)
-    with open(splits_dir / "val.json", "w") as f:
-        json.dump({"patients": val_pids}, f, indent=2)
-    with open(splits_dir / "test.json", "w") as f:
-        json.dump({"patients": test_pids}, f, indent=2)
-        
-    # Limited-label subsets: 10%, 25%, 50%, 100%
-    train_groups_list = [patient_stats[p]["pathology"] for p in train_pids]
-    for frac in [0.10, 0.25, 0.50, 1.00]:
-        frac_tag = f"train_{int(frac*100)}pct.json"
-        if frac == 1.00:
-            subset_pids = sorted(train_pids)
-        else:
-            n_select = max(1, int(len(train_pids) * frac))
-            sss_frac = StratifiedShuffleSplit(n_splits=1, train_size=n_select, random_state=42)
-            sub_idx, _ = next(sss_frac.split(train_pids, train_groups_list))
-            subset_pids = sorted([train_pids[i] for i in sub_idx])
-        with open(splits_dir / frac_tag, "w") as f:
-            json.dump({"patients": subset_pids}, f, indent=2)
-        print(f"  Limited split {frac_tag}: {len(subset_pids)} patients {dict(Counter([patient_stats[p]['pathology'] for p in subset_pids]))}")
-        
-    print(f"\nStratified Splits Saved successfully:")
-    print(f"  Train: {len(train_pids)} patients {split_info['pathology_distribution']['train']} -> {splits_dir / 'train_patients.txt'}")
-    print(f"  Val:   {len(val_pids)} patients {split_info['pathology_distribution']['val']} -> {splits_dir / 'val_patients.txt'}")
-    print(f"  Test:  {len(test_pids)} patients {split_info['pathology_distribution']['test']} -> {splits_dir / 'test_patients.txt'}")
-    print(f"  Metadata -> {splits_dir / 'split_metadata.json'}")
+    print("Canonical splits validated and preserved:")
+    print(f"  Train: {len(train_pids)} patients {count_pathologies(train_pids)}")
+    print(f"  Val:   {len(val_pids)} patients {count_pathologies(val_pids)}")
+    print(f"  Test:  {len(test_pids)} patients {count_pathologies(test_pids)}")
+    print("  Label subsets: 7 (10%) <= 17 (25%) <= 35 (50%) <= 70 (100%)")
 
     # 4. Visual Before/After Verification
     print("\n--- Generating Visual Verification Figures ---")
@@ -603,6 +539,10 @@ def run_preprocessing(config_path: str = "configs/preprocessing_config.yaml") ->
             "train": len(train_pids),
             "val": len(val_pids),
             "test": len(test_pids)
+        },
+        "split_provenance": {
+            "source": "existing canonical data/splits/*.txt artifacts",
+            "canonical_assignments": canonical_splits
         }
     }
     
@@ -620,4 +560,3 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="configs/preprocessing_config.yaml", help="Path to preprocessing configuration YAML")
     args = parser.parse_args()
     run_preprocessing(config_path=args.config)
-
