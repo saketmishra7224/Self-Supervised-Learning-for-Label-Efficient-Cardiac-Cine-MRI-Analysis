@@ -5,7 +5,7 @@
   "official_repository_collection_url": "https://humanheart-project.creatis.insa-lyon.fr/database/#collection/637218c173e9f0047faa00fb",
   "direct_download_api_endpoint": "https://humanheart-project.creatis.insa-lyon.fr/database/api/v1/folder/63721d7073e9f0047faa0525/download",
   "download_method": "Atomic patient-wise streaming via official Girder REST API",
-  "download_date": "2026-09-05T22:23:10.864030",
+  "download_date": "2026-09-20T04:19:10.299439",
   "archive_filename": "training.zip",
   "archive_path": "data/raw/training.zip",
   "archive_size_bytes": 1631323057,

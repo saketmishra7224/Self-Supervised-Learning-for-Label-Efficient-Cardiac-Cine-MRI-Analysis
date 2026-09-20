@@ -11,7 +11,7 @@
 ## 2. Acquisition Method
 - **Method**: Atomic patient-wise streaming via the official Girder REST API.
 - **Authentication**: Publicly accessible; no manual credentials or paywalls required.
-- **Download Date**: 2026-09-05 22:23:10
+- **Download Date**: 2026-09-20 04:19:10
 - **Archive Name**: `training.zip`
 - **Archive Location**: `data/raw/training.zip`
 - **Archive Size**: 1555.75 MB (1,631,323,057 bytes)
