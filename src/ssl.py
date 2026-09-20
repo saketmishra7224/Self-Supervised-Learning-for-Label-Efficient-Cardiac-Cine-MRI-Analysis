@@ -382,6 +382,9 @@ class SSLTrainer:
             'total_loss': [],
             'recon_loss': [],
             'temporal_loss': [],
+            'val_total_loss': [],
+            'val_recon_loss': [],
+            'val_temporal_loss': [],
             'lr': [],
         }
         self.start_epoch = 1
@@ -446,8 +449,49 @@ class SSLTrainer:
             'temporal_loss': temp_loss_acc / n,
             'lr': float(self.optimizer.param_groups[0]['lr']),
         }
+
+    @torch.no_grad()
+    def validate_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        """Evaluate the SSL objective on held-out validation patients."""
+        self.model.eval()
+        total_loss_acc = 0.0
+        recon_loss_acc = 0.0
+        temp_loss_acc = 0.0
+        n_batches = 0
+
+        for batch in tqdm(dataloader, desc=f"SSL Epoch {epoch:3d} [Val]", leave=False):
+            frame_t = batch['frame_t'].to(self.device)
+            frame_t1 = batch['frame_t1'].to(self.device)
+            if self.mixed_precision:
+                with torch.cuda.amp.autocast():
+                    results = self.model(frame_t, frame_t1)
+                    recon_loss, temp_loss, loss = compute_ssl_loss(
+                        results,
+                        recon_weight=self.recon_weight,
+                        temporal_weight=self.temporal_weight,
+                        recon_loss_type=self.recon_loss_type,
+                    )
+            else:
+                results = self.model(frame_t, frame_t1)
+                recon_loss, temp_loss, loss = compute_ssl_loss(
+                    results,
+                    recon_weight=self.recon_weight,
+                    temporal_weight=self.temporal_weight,
+                    recon_loss_type=self.recon_loss_type,
+                )
+            total_loss_acc += loss.item()
+            recon_loss_acc += recon_loss.item()
+            temp_loss_acc += temp_loss.item()
+            n_batches += 1
+
+        n = max(n_batches, 1)
+        return {
+            'total_loss': total_loss_acc / n,
+            'recon_loss': recon_loss_acc / n,
+            'temporal_loss': temp_loss_acc / n,
+        }
     
-    def save_checkpoint(self, epoch: int, is_best: bool = False):
+    def save_checkpoint(self, epoch: int, is_best: bool = False, save_periodic: bool = False):
         """Save training checkpoint with resume support."""
         state = {
             'epoch': epoch,
@@ -456,18 +500,24 @@ class SSLTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'history': self.history,
             'best_loss': self.best_loss,
+            'python_random_state': random.getstate(),
+            'numpy_random_state': np.random.get_state(),
+            'torch_random_state': torch.get_rng_state(),
         }
         if self.scheduler is not None:
             state['scheduler_state_dict'] = self.scheduler.state_dict()
         if self.scaler is not None:
             state['scaler_state_dict'] = self.scaler.state_dict()
+        if torch.cuda.is_available():
+            state['cuda_random_states'] = torch.cuda.get_rng_state_all()
+
+        torch.save(state, self.checkpoint_dir / "ssl_latest.pth")
+        self.model.save_encoder(str(self.checkpoint_dir / "ssl_encoder_latest.pth"))
         
-        # Save current epoch checkpoint
-        ckpt_path = self.checkpoint_dir / f"ssl_checkpoint_epoch{epoch}.pth"
-        torch.save(state, ckpt_path)
-        
-        # Save standalone encoder for transfer learning
-        self.model.save_encoder(str(self.checkpoint_dir / f"ssl_encoder_epoch{epoch}.pth"))
+        if save_periodic:
+            ckpt_path = self.checkpoint_dir / f"ssl_checkpoint_epoch{epoch}.pth"
+            torch.save(state, ckpt_path)
+            self.model.save_encoder(str(self.checkpoint_dir / f"ssl_encoder_epoch{epoch}.pth"))
         
         if is_best:
             best_path = self.checkpoint_dir / "ssl_best.pth"
@@ -476,7 +526,7 @@ class SSLTrainer:
     
     def load_checkpoint(self, checkpoint_path: str):
         """Resume training from saved checkpoint."""
-        ckpt = torch.load(checkpoint_path, map_location=self.device)
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         if self.scheduler is not None and 'scheduler_state_dict' in ckpt:
@@ -487,6 +537,14 @@ class SSLTrainer:
         self.start_epoch = ckpt.get('epoch', 0) + 1
         self.best_loss = ckpt.get('best_loss', float('inf'))
         self.history = ckpt.get('history', self.history)
+        if 'python_random_state' in ckpt:
+            random.setstate(ckpt['python_random_state'])
+        if 'numpy_random_state' in ckpt:
+            np.random.set_state(ckpt['numpy_random_state'])
+        if 'torch_random_state' in ckpt:
+            torch.set_rng_state(ckpt['torch_random_state'])
+        if torch.cuda.is_available() and 'cuda_random_states' in ckpt:
+            torch.cuda.set_rng_state_all(ckpt['cuda_random_states'])
         print(f"Resumed SSL training from epoch {self.start_epoch} (checkpoint: {checkpoint_path})")
     
     def run_smoke_test(self, dataloader: DataLoader) -> Dict[str, float]:
@@ -542,7 +600,7 @@ class SSLTrainer:
             'total_loss': total_loss.item(),
         }
     
-    def train(self, dataloader: DataLoader, n_epochs: int, save_interval: int = 10) -> Dict:
+    def train(self, dataloader: DataLoader, val_dataloader: DataLoader, n_epochs: int, save_interval: int = 10) -> Dict:
         """Full SSL training loop (for separate GPU training system)."""
         print(f"\n{'='*70}")
         print(f"Starting SSL Pretraining (TRAINING MACHINE ONLY)")
@@ -556,26 +614,34 @@ class SSLTrainer:
         
         for epoch in range(self.start_epoch, n_epochs + 1):
             metrics = self.train_epoch(dataloader, epoch)
+            val_metrics = self.validate_epoch(val_dataloader, epoch)
             
             self.history['epoch'].append(epoch)
             for k in ['total_loss', 'recon_loss', 'temporal_loss', 'lr']:
                 self.history[k].append(metrics[k])
+            self.history['val_total_loss'].append(val_metrics['total_loss'])
+            self.history['val_recon_loss'].append(val_metrics['recon_loss'])
+            self.history['val_temporal_loss'].append(val_metrics['temporal_loss'])
             
-            is_best = metrics['total_loss'] < self.best_loss
+            is_best = val_metrics['total_loss'] < self.best_loss
             if is_best:
-                self.best_loss = metrics['total_loss']
+                self.best_loss = val_metrics['total_loss']
             
             print(
                 f"Epoch {epoch:3d}/{n_epochs:3d} | "
                 f"Total Loss: {metrics['total_loss']:.4f} | "
+                f"Val: {val_metrics['total_loss']:.4f} | "
                 f"Recon: {metrics['recon_loss']:.4f} | "
                 f"Temporal: {metrics['temporal_loss']:.4f} | "
                 f"LR: {metrics['lr']:.2e}"
                 f"{' [BEST]' if is_best else ''}"
             )
             
-            if epoch % save_interval == 0 or is_best or epoch == n_epochs:
-                self.save_checkpoint(epoch, is_best=is_best)
+            self.save_checkpoint(
+                epoch,
+                is_best=is_best,
+                save_periodic=(epoch % save_interval == 0 or epoch == n_epochs),
+            )
         
         # Save final model, encoder, and training history
         torch.save(self.model.state_dict(), self.checkpoint_dir / "ssl_final.pth")
@@ -645,6 +711,10 @@ def create_ssl_pipeline(config: dict, device_override: Optional[str] = None):
         processed_dir=processed_dir,
         split_file=train_split,
     )
+    val_dataset = ACDCTemporalDataset(
+        processed_dir=processed_dir,
+        split_file=data_cfg.get('val_split', 'data/splits/val_patients.txt'),
+    )
     
     train_cfg = config.get('training', {})
     batch_size = train_cfg.get('batch_size', 16)
@@ -659,6 +729,14 @@ def create_ssl_pipeline(config: dict, device_override: Optional[str] = None):
         num_workers=num_workers,
         pin_memory=(device.type == 'cuda'),
         drop_last=True,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=(device.type == 'cuda'),
+        drop_last=False,
     )
     
     # Build model
@@ -694,7 +772,7 @@ def create_ssl_pipeline(config: dict, device_override: Optional[str] = None):
         output_dir=log_cfg.get('output_dir', 'results/ssl'),
     )
     
-    return model, dataloader, trainer, device
+    return model, dataloader, val_dataloader, trainer, device
 
 
 def main():
@@ -747,7 +825,7 @@ def main():
     if args.lr is not None:
         config['training']['learning_rate'] = args.lr
     
-    model, dataloader, trainer, device = create_ssl_pipeline(config, device_override=args.device)
+    model, dataloader, val_dataloader, trainer, device = create_ssl_pipeline(config, device_override=args.device)
     
     total_params = count_parameters(model)
     encoder_params = count_parameters(model.encoder)
@@ -773,7 +851,7 @@ def main():
     
     epochs = config['training'].get('epochs', 100)
     save_interval = config['training'].get('save_interval', 10)
-    trainer.train(dataloader, n_epochs=epochs, save_interval=save_interval)
+    trainer.train(dataloader, val_dataloader, n_epochs=epochs, save_interval=save_interval)
 
 
 if __name__ == "__main__":
