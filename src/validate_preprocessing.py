@@ -196,7 +196,10 @@ def validate_dataset_interfaces(processed_dir: Path, splits_dir: Path):
 
 def main():
     splits_dir = Path("data/splits")
-    processed_dir = Path("data/processed")
+    # Resolve the processed-dir symlink (e.g. Kaggle's read-only dataset mount)
+    # before globbing: Path.glob on an unresolved symlink can yield no matches
+    # on some filesystems even though the target holds the files.
+    processed_dir = Path("data/processed").resolve()
     
     train_pids, val_pids, test_pids = validate_splits(splits_dir)
     validate_processed_data(processed_dir)
