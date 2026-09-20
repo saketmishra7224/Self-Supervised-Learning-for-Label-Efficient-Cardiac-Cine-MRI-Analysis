@@ -91,8 +91,10 @@ def validate_processed_data(processed_dir: Path):
     print(f"Labeled samples (ED/ES): {summary['labeled_samples']}")
     print(f"Unlabeled cine samples:  {summary['unlabeled_cine_samples']}")
     
-    # Spot check several sample files across the dataset
-    npz_files = sorted(list(processed_dir.glob("*.npz")))
+    # Spot check several sample files across the dataset.
+    # Exclude macOS AppleDouble sidecars (._*.npz) present alongside the
+    # read-only Kaggle dataset mount; they are not valid training samples.
+    npz_files = sorted(f for f in processed_dir.glob("*.npz") if not f.name.startswith("._"))
     assert len(npz_files) == summary['total_samples_generated'], "File count mismatch!"
     
     # Check first, middle, and last 5 files
