@@ -257,27 +257,73 @@ def test_08_pseudo_labels():
 
 def test_09_ablation_variants():
     step_header(9, "Verifying 5 Ablation Variants & Multi-Loss Formulation")
-    from src.experiment_runner import build_experiment_model, ExperimentLossManager
+    import copy
+    import tempfile
+    from src.experiment_runner import build_experiment_model
+    from src.losses import DiceCELoss
 
     with open(Path(project_root) / "configs/experiments.yaml", "r", encoding="utf-8") as f:
         exp_cfg = yaml.safe_load(f)
 
-    loss_mgr = ExperimentLossManager(dice_weight=1.0, ce_weight=1.0, motion_weight=0.1, pseudo_weight=0.25, num_classes=4)
+    loss_cfg = exp_cfg.get("loss", {})
+    # Mirror the auxiliary-loss weighting used by FineTuneExperimentTrainer.train_epoch:
+    # total = DiceCE + motion_weight * motion_mse + pseudo_weight * CE(ignore_index=-1).
+    criterion = DiceCELoss(
+        num_classes=exp_cfg["model"].get("num_classes", 4),
+        dice_weight=loss_cfg.get("dice_weight", 1.0),
+        ce_weight=loss_cfg.get("ce_weight", 1.0),
+        include_background=loss_cfg.get("include_background", False),
+    )
+    motion_weight = float(loss_cfg.get("motion_weight", 0.1))
+    pseudo_weight = float(loss_cfg.get("pseudo_weight", 0.25))
     variants = ["supervised", "ssl_finetune", "ssl_motion", "ssl_pseudo", "full_pipeline"]
+    for mode in variants:
+        assert mode in exp_cfg["variants"], f"Variant missing from experiments.yaml: {mode}"
 
     dummy_in = torch.randn(2, 1, 128, 128)
     dummy_tg = torch.randint(0, 4, (2, 128, 128))
 
-    for mode in variants:
-        model, motion_est = build_experiment_model(exp_cfg, mode=mode, device=torch.device("cpu"))
-        logits = model(dummy_in)
-        m_loss = torch.tensor(0.04) if motion_est is not None else None
-        p_loss = logits if "pseudo" in mode or mode == "full_pipeline" else None
-        p_labels = dummy_tg if p_loss is not None else None
+    # build_experiment_model strictly requires SSL/motion checkpoint files, which do
+    # not exist on a CPU smoke-test machine. Stage throwaway random-weight
+    # checkpoints in a temp dir (auto-removed) so the real builder is exercised
+    # for every variant without training or repo artifacts.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = copy.deepcopy(exp_cfg)
+        for mode, variant in cfg["variants"].items():
+            if variant.get("use_ssl_pretrained", False):
+                variant["ssl_checkpoint"] = tmpdir + "/ssl_encoder_best.pth"
+            if variant.get("use_motion", False):
+                variant["motion_checkpoint"] = tmpdir + "/motion_model_best.pth"
+        if not Path(tmpdir + "/ssl_encoder_best.pth").exists():
+            from src.segmentation_model import SegmentationUNet as _UNet
+            _probe = _UNet(
+                in_channels=cfg["model"].get("in_channels", 1),
+                num_classes=cfg["model"].get("num_classes", 4),
+                encoder_channels=cfg["model"].get("encoder_channels", [32, 64, 128, 256]),
+            )
+            torch.save({"encoder_state_dict": _probe.encoder.state_dict()},
+                       tmpdir + "/ssl_encoder_best.pth")
+            from src.motion import MotionEstimator as _Motion
+            torch.save({"model_state_dict": _Motion(channels=[16, 32, 64, 32]).state_dict()},
+                       tmpdir + "/motion_model_best.pth")
 
-        tot_loss, l_dict = loss_mgr.compute_loss(logits, dummy_tg, motion_loss=m_loss, logits_pseudo=p_loss, pseudo_labels=p_labels)
-        assert torch.isfinite(tot_loss)
-        print(f"  [PASS] Variant [{mode:15s}]: model={model.__class__.__name__}, motion={motion_est is not None}, loss={tot_loss.item():.4f}")
+        for mode in variants:
+            model, motion_est = build_experiment_model(
+                cfg, mode=mode, ssl_checkpoint=None, device=torch.device("cpu"))
+            logits = model(dummy_in)
+            total_loss = criterion(logits, dummy_tg)
+            loss_parts = {"sup": float(total_loss.detach())}
+            if motion_est is not None:
+                motion_loss = torch.tensor(0.04)
+                total_loss = total_loss + motion_weight * motion_loss
+                loss_parts["motion"] = float(motion_loss.detach())
+            if "pseudo" in mode or mode == "full_pipeline":
+                pseudo_ce = F.cross_entropy(logits, dummy_tg, ignore_index=-1)
+                total_loss = total_loss + pseudo_weight * pseudo_ce
+                loss_parts["pseudo"] = float(pseudo_ce.detach())
+            assert torch.isfinite(total_loss)
+            print(f"  [PASS] Variant [{mode:15s}]: model={model.__class__.__name__}, "
+                  f"motion={motion_est is not None}, loss={total_loss.item():.4f} {loss_parts}")
 
 
 def test_10_aggregation_and_reporting():
