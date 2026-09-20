@@ -1,0 +1,40 @@
+{
+  "phase": "final_local_data_validation",
+  "status": "PASS",
+  "official_validator": "python src/validate_preprocessing.py",
+  "independent_integrity_checks": {
+    "npz_files": 25351,
+    "dataset_index_entries": 25351,
+    "patients": 100,
+    "patient_slice_sequences": 951,
+    "labeled_samples": 1902,
+    "unlabeled_cine_samples": 23449,
+    "phase_counts": {
+      "ED": 951,
+      "ES": 951,
+      "cine": 23449
+    },
+    "image_and_mask_shape": [256, 256],
+    "target_spacing_mm": [1.5, 1.5],
+    "image_dtype": "float32",
+    "mask_dtype": "int64",
+    "finite_images": true,
+    "label_values": [0, 1, 2, 3],
+    "temporal_frames_contiguous_per_patient_slice": true,
+    "index_matches_processed_files": true
+  },
+  "canonical_split_validation": {
+    "train": 70,
+    "validation": 10,
+    "test": 20,
+    "labeled_10": 7,
+    "labeled_25": 17,
+    "labeled_50": 35,
+    "labeled_100": 70,
+    "train_validation_test_disjoint": true,
+    "primary_splits_cover_all_patients": true,
+    "labeled_subsets_nested": true,
+    "labeled_100_equals_train": true,
+    "labeled_subsets_exclude_validation_and_test": true
+  }
+}
