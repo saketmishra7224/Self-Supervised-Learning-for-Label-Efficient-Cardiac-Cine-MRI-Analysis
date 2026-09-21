@@ -470,7 +470,7 @@ class Trainer:
         if 'numpy_random_state' in checkpoint:
             np.random.set_state(checkpoint['numpy_random_state'])
         if 'torch_random_state' in checkpoint:
-            torch.set_rng_state(checkpoint['torch_random_state'])
+            torch.set_rng_state(checkpoint['torch_random_state'].cpu())
         if torch.cuda.is_available() and 'cuda_random_states' in checkpoint:
             torch.cuda.set_rng_state_all(checkpoint['cuda_random_states'])
 

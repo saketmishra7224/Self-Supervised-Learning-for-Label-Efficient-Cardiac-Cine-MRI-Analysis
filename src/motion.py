@@ -588,7 +588,7 @@ class MotionTrainer:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         if self.scaler is not None and "scaler_state_dict" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
-        for key, restore in (("python_random_state", random.setstate), ("numpy_random_state", np.random.set_state), ("torch_random_state", torch.set_rng_state)):
+        for key, restore in (("python_random_state", random.setstate), ("numpy_random_state", np.random.set_state), ("torch_random_state", lambda state: torch.set_rng_state(state.cpu()))):
             if key in checkpoint:
                 restore(checkpoint[key])
         if torch.cuda.is_available() and "cuda_random_states" in checkpoint:

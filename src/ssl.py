@@ -542,7 +542,7 @@ class SSLTrainer:
         if 'numpy_random_state' in ckpt:
             np.random.set_state(ckpt['numpy_random_state'])
         if 'torch_random_state' in ckpt:
-            torch.set_rng_state(ckpt['torch_random_state'])
+            torch.set_rng_state(ckpt['torch_random_state'].cpu())
         if torch.cuda.is_available() and 'cuda_random_states' in ckpt:
             torch.cuda.set_rng_state_all(ckpt['cuda_random_states'])
         print(f"Resumed SSL training from epoch {self.start_epoch} (checkpoint: {checkpoint_path})")
