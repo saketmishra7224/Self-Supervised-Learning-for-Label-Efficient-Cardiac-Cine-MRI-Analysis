@@ -544,7 +544,7 @@ class SSLTrainer:
         if 'torch_random_state' in ckpt:
             torch.set_rng_state(ckpt['torch_random_state'].cpu())
         if torch.cuda.is_available() and 'cuda_random_states' in ckpt:
-            torch.cuda.set_rng_state_all(ckpt['cuda_random_states'])
+            torch.cuda.set_rng_state_all([state.cpu() for state in ckpt['cuda_random_states']])
         print(f"Resumed SSL training from epoch {self.start_epoch} (checkpoint: {checkpoint_path})")
     
     def run_smoke_test(self, dataloader: DataLoader) -> Dict[str, float]:
