@@ -436,7 +436,7 @@ class SSLTrainer:
             pbar.set_postfix({
                 'loss': f"{loss.item():.4f}",
                 'recon': f"{recon_loss.item():.4f}",
-                'temp': f"{temp_loss.item():.4f}",
+                'temp': f"{temp_loss.item():.6e}",
             })
         
         if self.scheduler is not None:
@@ -632,7 +632,8 @@ class SSLTrainer:
                 f"Total Loss: {metrics['total_loss']:.4f} | "
                 f"Val: {val_metrics['total_loss']:.4f} | "
                 f"Recon: {metrics['recon_loss']:.4f} | "
-                f"Temporal: {metrics['temporal_loss']:.4f} | "
+                f"Temporal: {metrics['temporal_loss']:.6e} | "
+                f"Val Temporal: {val_metrics['temporal_loss']:.6e} | "
                 f"LR: {metrics['lr']:.2e}"
                 f"{' [BEST]' if is_best else ''}"
             )
