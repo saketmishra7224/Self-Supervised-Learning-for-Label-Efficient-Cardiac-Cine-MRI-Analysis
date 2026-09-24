@@ -75,6 +75,7 @@ def evaluate_run(
     config: dict,
     device: torch.device,
     batch_size: int = 8,
+    processed_dir_override=None,
 ) -> dict:
     """Score one production run on the fixed test split (single pass)."""
     label_fraction, seed = parse_run_id(run_id)
@@ -95,13 +96,17 @@ def evaluate_run(
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.eval()
 
+    processed_dir = processed_dir_override or data_cfg.get("processed_dir", "data/processed")
+
     dataset = ACDCSegDataset(
-        data_cfg.get("processed_dir", "data/processed"),
+        processed_dir,
         test_split,
         transform=get_val_transforms(),
     )
     if len(dataset) == 0:
-        raise ValueError(f"Test dataset is empty: {test_split}")
+        raise ValueError(
+            f"Test dataset is empty: {test_split} | processed_dir={processed_dir}"
+        )
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -173,6 +178,11 @@ def main() -> None:
                         help="Evaluate all four production Full Pipeline runs")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--processed-dir",
+        default=None,
+        help="Override the processed ACDC data directory used for final test evaluation.",
+    )
     args = parser.parse_args()
 
     if args.all:
@@ -188,7 +198,7 @@ def main() -> None:
         else "cpu" if args.device == "auto" else args.device
     )
     for run_id in run_ids:
-        print_summary(evaluate_run(run_id, config, device, args.batch_size))
+        print_summary(evaluate_run(run_id, config, device, args.batch_size, args.processed_dir))
 
 
 if __name__ == "__main__":
