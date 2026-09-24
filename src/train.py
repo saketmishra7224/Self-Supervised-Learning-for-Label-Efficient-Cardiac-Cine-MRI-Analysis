@@ -472,7 +472,7 @@ class Trainer:
         if 'torch_random_state' in checkpoint:
             torch.set_rng_state(checkpoint['torch_random_state'].cpu())
         if torch.cuda.is_available() and 'cuda_random_states' in checkpoint:
-            torch.cuda.set_rng_state_all(checkpoint['cuda_random_states'])
+            torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint['cuda_random_states']])
 
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_metric = checkpoint.get('best_metric')

@@ -592,7 +592,7 @@ class MotionTrainer:
             if key in checkpoint:
                 restore(checkpoint[key])
         if torch.cuda.is_available() and "cuda_random_states" in checkpoint:
-            torch.cuda.set_rng_state_all(checkpoint["cuda_random_states"])
+            torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_random_states"]])
         self.start_epoch = checkpoint["epoch"] + 1
         self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         self.history = checkpoint.get("history", self.history)
