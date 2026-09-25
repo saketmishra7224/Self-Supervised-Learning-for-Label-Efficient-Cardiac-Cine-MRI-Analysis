@@ -46,6 +46,18 @@ PRODUCTION_RUN_IDS = [
 
 _RUN_ID_PATTERN = re.compile(r"^full_pipeline_(\d+)pct_seed(\d+)$")
 
+# Canonical fixed 20-patient test cohort. Results may only be written when
+# the evaluated patient IDs match this cohort exactly.
+CANONICAL_TEST_SPLIT = Path("data/splits/test_patients.txt")
+
+
+def _read_cohort_ids(split_file: Path) -> set:
+    return {
+        line.strip()
+        for line in Path(split_file).read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
 
 def parse_run_id(run_id: str) -> tuple:
     """Return (label_fraction, seed) for a production run ID or raise."""
@@ -134,6 +146,17 @@ def evaluate_run(
         compute_hd=True,
     )
     patient_results = compute_patient_level_metrics(batch_results["per_sample"])
+
+    expected_cohort = _read_cohort_ids(CANONICAL_TEST_SPLIT)
+    evaluated_cohort = set(patient_results["per_patient"])
+    if evaluated_cohort != expected_cohort:
+        raise ValueError(
+            "Evaluated patient cohort does not match the canonical fixed "
+            f"test cohort ({CANONICAL_TEST_SPLIT}): missing="
+            f"{sorted(expected_cohort - evaluated_cohort)}, unexpected="
+            f"{sorted(evaluated_cohort - expected_cohort)}. "
+            "Refusing to write test_metrics.json."
+        )
 
     output = {
         "run_id": run_id,

@@ -133,7 +133,7 @@ python src/preprocess.py --config configs/preprocessing_config.yaml
 Splits are strictly partitioned at the **patient level** to prevent spatial data leakage across slices:
 - **Training Cohort**: 70 patients (1,324 labeled ED/ES slices, 22,000+ intermediate cine slices)
 - **Validation Cohort**: 10 patients (194 labeled slices)
-- **Test Cohort**: 20 patients (386 labeled slices)
+- **Test Cohort**: 20 patients (398 labeled slices)
 - **Pathology Stratification**: Balanced distribution across all 5 diagnostic groups (NOR, MINF, DCM, HCM, ARV).
 
 ### Nested Labeled Subsets (Seed 42):

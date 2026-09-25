@@ -304,6 +304,19 @@ class Trainer:
             best_metric = -float('inf') if "dice" in monitor_metric.lower() else float('inf')
         best_epoch = self.best_epoch
         
+        if self.start_epoch > n_epochs:
+            # A restored checkpoint already completed the requested epochs.
+            # Return the completed state instead of running zero epochs and
+            # then saving from unassigned epoch/validation variables.
+            print(f"Checkpoint already completed {n_epochs} epochs "
+                  f"(restored epoch {self.start_epoch - 1}); nothing to train.")
+            history_path = self.checkpoint_dir / f"{self.experiment_name}_history.json"
+            with open(history_path, 'w') as f:
+                json.dump(self.history, f, indent=2)
+            if self.writer:
+                self.writer.close()
+            return self.history
+
         print(f"\n{'='*60}")
         print(f"Training: {self.experiment_name}")
         print(f"Device: {self.device}")
@@ -427,6 +440,7 @@ class Trainer:
         """Save model checkpoint."""
         checkpoint = {
             'epoch': epoch,
+            'experiment_name': self.experiment_name,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'metrics': metrics,
@@ -477,7 +491,14 @@ class Trainer:
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_metric = checkpoint.get('best_metric')
         self.best_epoch = checkpoint.get('best_epoch', 0)
-        self.history = checkpoint.get('history', self.history)
+        # Merge saved history into the initialized structure so older
+        # checkpoints lacking newer fields keep safe empty defaults.
+        saved_history = checkpoint.get('history') or {}
+        for key in self.history:
+            if key in saved_history:
+                self.history[key] = saved_history[key]
+        for key, value in saved_history.items():
+            self.history.setdefault(key, value)
         print(f"Resuming from epoch {self.start_epoch} (checkpoint: {checkpoint_path})")
         return checkpoint
 

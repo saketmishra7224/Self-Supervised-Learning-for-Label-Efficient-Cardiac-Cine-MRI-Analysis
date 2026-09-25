@@ -453,11 +453,13 @@ class SSLTrainer:
     @torch.no_grad()
     def validate_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
         """Evaluate the SSL objective on held-out validation patients."""
+        if len(dataloader) == 0:
+            raise ValueError("SSL validation requires a non-empty validation loader.")
         self.model.eval()
         total_loss_acc = 0.0
         recon_loss_acc = 0.0
         temp_loss_acc = 0.0
-        n_batches = 0
+        n_pairs = 0
 
         for batch in tqdm(dataloader, desc=f"SSL Epoch {epoch:3d} [Val]", leave=False):
             frame_t = batch['frame_t'].to(self.device)
@@ -479,12 +481,12 @@ class SSLTrainer:
                     temporal_weight=self.temporal_weight,
                     recon_loss_type=self.recon_loss_type,
                 )
-            total_loss_acc += loss.item()
-            recon_loss_acc += recon_loss.item()
-            temp_loss_acc += temp_loss.item()
-            n_batches += 1
+            total_loss_acc += loss.item() * frame_t.shape[0]
+            recon_loss_acc += recon_loss.item() * frame_t.shape[0]
+            temp_loss_acc += temp_loss.item() * frame_t.shape[0]
+            n_pairs += frame_t.shape[0]
 
-        n = max(n_batches, 1)
+        n = max(n_pairs, 1)
         return {
             'total_loss': total_loss_acc / n,
             'recon_loss': recon_loss_acc / n,
@@ -535,8 +537,16 @@ class SSLTrainer:
             self.scaler.load_state_dict(ckpt['scaler_state_dict'])
         
         self.start_epoch = ckpt.get('epoch', 0) + 1
-        self.best_loss = ckpt.get('best_loss', float('inf'))
-        self.history = ckpt.get('history', self.history)
+        best_loss = ckpt.get('best_loss', ckpt.get('best_val_loss', float('inf')))
+        self.best_loss = best_loss if best_loss is not None else float('inf')
+        # Migrate legacy histories: keep initialized series for keys absent
+        # from older checkpoints instead of failing on first resumed epoch.
+        saved_history = ckpt.get('history') or {}
+        for key in self.history:
+            if key in saved_history:
+                self.history[key] = saved_history[key]
+        for key, value in saved_history.items():
+            self.history.setdefault(key, value)
         if 'python_random_state' in ckpt:
             random.setstate(ckpt['python_random_state'])
         if 'numpy_random_state' in ckpt:

@@ -9,9 +9,8 @@ import os
 import random
 import sys
 import time
-from itertools import cycle
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if sys.path and os.path.abspath(sys.path[0]) == os.path.dirname(os.path.abspath(__file__)):
@@ -54,6 +53,32 @@ def _read_patient_ids(split_file: Union[str, Path]) -> set:
         return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")}
     data = json.loads(path.read_text(encoding="utf-8"))
     return set(data if isinstance(data, list) else data.get("patients", data.get("train", [])))
+
+
+def _cycled_batches(loader: DataLoader) -> Iterator[Dict[str, torch.Tensor]]:
+    """Yield batches from a loader indefinitely without caching them.
+
+    Unlike itertools.cycle (which retains every yielded batch), this
+    re-iterates the loader on exhaustion so only one batch is live at a time.
+    """
+    while True:
+        for batch in loader:
+            yield batch
+
+
+def validate_resume_checkpoint(resume_path: Union[str, Path], run_id: str) -> None:
+    """Fail closed on cross-experiment resume before any state is restored."""
+    checkpoint = torch.load(str(resume_path), map_location="cpu", weights_only=False)
+    provenance = checkpoint.get("experiment_name")
+    if provenance is None:
+        print(f"Warning: resume checkpoint {resume_path} carries no experiment "
+              f"provenance (legacy format); proceeding for run '{run_id}' "
+              "on operator responsibility.")
+    elif str(provenance) != run_id:
+        raise ValueError(
+            f"Refusing cross-experiment resume: checkpoint {resume_path} "
+            f"belongs to experiment '{provenance}', not '{run_id}'."
+        )
 
 
 class ExperimentRegistry:
@@ -153,8 +178,8 @@ class FineTuneExperimentTrainer(Trainer):
         self.model.train()
         if self.motion_estimator is not None:
             self.motion_estimator.eval()
-        temporal_batches = cycle(self.temporal_loader) if self.temporal_loader is not None else None
-        pseudo_batches = cycle(self.pseudo_loader) if self.pseudo_loader is not None else None
+        temporal_batches = _cycled_batches(self.temporal_loader) if self.temporal_loader is not None else None
+        pseudo_batches = _cycled_batches(self.pseudo_loader) if self.pseudo_loader is not None else None
         totals = {"train_loss": 0.0, "motion_loss": 0.0, "pseudo_loss": 0.0}
         for batch in train_loader:
             images, masks = batch["image"].to(self.device), batch["mask"].to(self.device)
@@ -224,6 +249,7 @@ def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, devi
     criterion = DiceCELoss(num_classes=data_cfg.get("num_classes", 4), dice_weight=loss_cfg.get("dice_weight", 1.0), ce_weight=loss_cfg.get("ce_weight", 1.0), include_background=loss_cfg.get("include_background", False))
     trainer = FineTuneExperimentTrainer(model=model, optimizer=optimizer, criterion=criterion, device=device, scheduler=scheduler, mixed_precision=opt_cfg.get("mixed_precision", True), checkpoint_dir=str(checkpoint_dir), log_dir=str(results_dir / "logs"), experiment_name=run_id, motion_estimator=motion, temporal_loader=temporal_loader, pseudo_loader=pseudo_loader, motion_weight=float(loss_cfg.get("motion_weight", 0.1)), pseudo_weight=float(loss_cfg.get("pseudo_weight", 0.25)), freeze_encoder_epochs=int(variant.get("freeze_encoder_epochs", 0)))
     if resume:
+        validate_resume_checkpoint(resume, run_id)
         trainer.load_checkpoint(resume)
     metadata = {"run_id": run_id, "mode": mode, "label_fraction": label_fraction, "seed": seed, "device": str(device), "train_patients": sorted(train_patients), "validation_patients": sorted(val_patients), "ssl_checkpoint": ssl_checkpoint or variant.get("ssl_checkpoint"), "motion_checkpoint": variant.get("motion_checkpoint"), "uses_pseudo_labels": variant.get("use_pseudo_labels", False), "pseudo_label_source": str(Path(log_cfg.get("pseudo_labels_dir", "results/pseudo_labels")) / f"{label_fraction}pct") if variant.get("use_pseudo_labels", False) else None, "robustness": {"status": "not_run", "config": config.get("robustness", {})}, "parameters": count_parameters(model)}
     (results_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

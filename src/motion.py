@@ -618,6 +618,10 @@ class MotionTrainer:
             self.history["lr"].append(float(self.optimizer.param_groups[0]["lr"]))
             if epoch % save_interval == 0 or is_best or epoch == n_epochs:
                 self.save_checkpoint(epoch, is_best=is_best)
+            # Persist history after every completed epoch so an interrupted
+            # resumable run still has up-to-date metrics on disk.
+            with open(self.output_dir / "motion_history.json", "w", encoding="utf-8") as handle:
+                json.dump(self.history, handle, indent=2)
             print(f"Epoch {epoch:3d}/{n_epochs} | train={train_metrics['total_loss']:.5f} | val={val_metrics['total_loss']:.5f} | photo={val_metrics['photo_loss']:.5f} | smooth={val_metrics['smooth_loss']:.5f} | {time.time() - started:.1f}s{' [BEST]' if is_best else ''}")
         with open(self.output_dir / "motion_history.json", "w", encoding="utf-8") as handle:
             json.dump(self.history, handle, indent=2)

@@ -35,6 +35,7 @@ if project_root not in sys.path:
 
 import math
 import json
+import re
 import argparse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -495,6 +496,48 @@ def save_pseudo_label_metadata(
     print(f"Pseudo-label metadata saved to: {out_path}")
 
 
+def resolve_teacher_label_fraction(checkpoint_path: Path) -> Optional[int]:
+    """Determine the label fraction a teacher checkpoint was trained with.
+
+    Checks explicit checkpoint metadata first, then the run-ID naming
+    convention (e.g. supervised_10pct_seed42). Returns None when the
+    provenance cannot be established.
+    """
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+    if isinstance(checkpoint, dict):
+        if checkpoint.get("label_fraction") is not None:
+            try:
+                return int(checkpoint["label_fraction"])
+            except (TypeError, ValueError):
+                pass
+        for source in (str(checkpoint.get("experiment_name") or ""), checkpoint_path.stem):
+            match = re.search(r"(\d+)pct", source)
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def validate_teacher_label_fraction(checkpoint_value: str, label_fraction: int) -> None:
+    """Fail closed when the teacher's fraction cannot be proven to match."""
+    teacher_fraction = resolve_teacher_label_fraction(Path(checkpoint_value))
+    if teacher_fraction is None:
+        raise ValueError(
+            f"Cannot establish the label fraction of teacher checkpoint "
+            f"{checkpoint_value}; refusing to generate pseudo-labels for "
+            f"{label_fraction}%. Use a teacher checkpoint from the matching "
+            "supervised run."
+        )
+    if teacher_fraction != label_fraction:
+        raise ValueError(
+            f"Teacher checkpoint {checkpoint_value} was trained with "
+            f"{teacher_fraction}% labels, but pseudo-labels were requested "
+            f"for {label_fraction}%. Aborting to prevent label leakage."
+        )
+
+
 def load_teacher_model(config: Dict, device: torch.device) -> nn.Module:
     """Load the baseline checkpoint used as the pseudo-label teacher."""
     checkpoint_value = config['model'].get('checkpoint')
@@ -546,6 +589,7 @@ def generate_pseudo_labels(config: Dict, device: torch.device, label_fraction: i
         pin_memory=device.type == 'cuda',
     )
     model = load_teacher_model(config, device)
+    validate_teacher_label_fraction(config['model']['checkpoint'], label_fraction)
     motion_estimator = load_motion_estimator(config, device)
     generator = PseudoLabelGenerator(
         model=model,
