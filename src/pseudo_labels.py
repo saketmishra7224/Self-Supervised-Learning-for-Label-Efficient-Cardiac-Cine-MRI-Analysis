@@ -509,10 +509,10 @@ def resolve_teacher_label_fraction(checkpoint_path: Path) -> Optional[int]:
         return None
     if isinstance(checkpoint, dict):
         if checkpoint.get("label_fraction") is not None:
-            try:
-                return int(checkpoint["label_fraction"])
-            except (TypeError, ValueError):
-                pass
+            teacher_fraction = checkpoint["label_fraction"]
+            if teacher_fraction in {10, 25, 50, 100}:
+                return int(teacher_fraction)
+            return None
         for source in (str(checkpoint.get("experiment_name") or ""), checkpoint_path.stem):
             match = re.search(r"(\d+)pct", source)
             if match:

@@ -342,7 +342,10 @@ checkpoints/
 ├── motion/
 │   └── motion_model_best.pth
 └── experiments/
-    └── {mode}_{fraction}pct_best.pth
+    └── {mode}_{fraction}pct_seed{seed}/
+        ├── {mode}_{fraction}pct_seed{seed}_latest.pth
+        ├── {mode}_{fraction}pct_seed{seed}_best.pth
+        └── {mode}_{fraction}pct_seed{seed}_final.pth
 ```
 
 ---
