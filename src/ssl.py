@@ -537,11 +537,20 @@ class SSLTrainer:
             self.scaler.load_state_dict(ckpt['scaler_state_dict'])
         
         self.start_epoch = ckpt.get('epoch', 0) + 1
-        best_loss = ckpt.get('best_loss', ckpt.get('best_val_loss', float('inf')))
-        self.best_loss = best_loss if best_loss is not None else float('inf')
-        # Migrate legacy histories: keep initialized series for keys absent
-        # from older checkpoints instead of failing on first resumed epoch.
+        # Distinguish legacy training-loss-only checkpoints from ones with
+        # validation history: only preserve a stored best loss when val
+        # history exists, otherwise restart selection from infinity instead
+        # of inventing validation-loss state.
         saved_history = ckpt.get('history') or {}
+        has_val_history = any(
+            len(saved_history.get(key) or []) > 0
+            for key in ('val_total_loss', 'val_recon_loss', 'val_temporal_loss')
+        )
+        if has_val_history:
+            best_loss = ckpt.get('best_loss', ckpt.get('best_val_loss', float('inf')))
+            self.best_loss = best_loss if best_loss is not None else float('inf')
+        else:
+            self.best_loss = float('inf')
         for key in self.history:
             if key in saved_history:
                 self.history[key] = saved_history[key]

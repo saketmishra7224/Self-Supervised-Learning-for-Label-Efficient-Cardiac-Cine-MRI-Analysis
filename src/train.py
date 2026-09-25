@@ -183,6 +183,7 @@ class Trainer:
         self.start_epoch = 1
         self.best_metric = None
         self.best_epoch = 0
+        self.early_stop_counter = 0
     
     def train_epoch(
         self,
@@ -298,6 +299,10 @@ class Trainer:
             patience=early_stopping_patience,
             mode="max" if "dice" in monitor_metric.lower() else "min",
         )
+        # Continue from the prior stopping state when resuming.
+        if self.best_metric is not None:
+            early_stop.best_value = self.best_metric
+        early_stop.counter = int(getattr(self, 'early_stop_counter', 0) or 0)
         
         best_metric = self.best_metric
         if best_metric is None:
@@ -416,7 +421,9 @@ class Trainer:
             )
             
             # Early stopping
-            if early_stop(current_metric):
+            stopped = early_stop(current_metric)
+            self.early_stop_counter = early_stop.counter
+            if stopped:
                 print(f"\nEarly stopping at epoch {epoch}. Best: epoch {best_epoch}")
                 break
         
@@ -441,12 +448,14 @@ class Trainer:
         checkpoint = {
             'epoch': epoch,
             'experiment_name': self.experiment_name,
+            'experiment_metadata': dict(getattr(self, 'experiment_metadata', {}) or {}),
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'metrics': metrics,
             'history': self.history,
             'best_metric': self.best_metric,
             'best_epoch': self.best_epoch,
+            'early_stop_counter': int(getattr(self, 'early_stop_counter', 0) or 0),
             'python_random_state': random.getstate(),
             'numpy_random_state': np.random.get_state(),
             'torch_random_state': torch.get_rng_state(),
@@ -491,6 +500,7 @@ class Trainer:
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_metric = checkpoint.get('best_metric')
         self.best_epoch = checkpoint.get('best_epoch', 0)
+        self.early_stop_counter = int(checkpoint.get('early_stop_counter', 0) or 0)
         # Merge saved history into the initialized structure so older
         # checkpoints lacking newer fields keep safe empty defaults.
         saved_history = checkpoint.get('history') or {}

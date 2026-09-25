@@ -160,6 +160,20 @@ python src/train.py --config configs/baseline_config.yaml --device cuda
 ```
 - **Output Checkpoint**: `checkpoints/baseline_unet_best.pth`
 
+### STEP 2B: Fraction-Matched Supervised Teachers (Prerequisite for STEP 5)
+*Each pseudo-label fraction requires a supervised teacher trained on that same
+fraction. Train all four teachers below BEFORE running STEP 5; the STEP 6/7
+matrix commands must not be the first place these runs appear.*
+```bash
+# TRAINING MACHINE COMMANDS (run all four before STEP 5):
+python src/experiment_runner.py --mode supervised --label-fraction 10 --seed 42 --device cuda
+python src/experiment_runner.py --mode supervised --label-fraction 25 --seed 42 --device cuda
+python src/experiment_runner.py --mode supervised --label-fraction 50 --seed 42 --device cuda
+python src/experiment_runner.py --mode supervised --label-fraction 100 --seed 42 --device cuda
+```
+- **Output Checkpoints**: `checkpoints/experiments/supervised_{10,25,50,100}pct_seed42/supervised_{10,25,50,100}pct_seed42_best.pth`
+- Each `--teacher-checkpoint` in STEP 5 must point at the teacher whose label fraction matches `--label-fraction`.
+
 ### STEP 3: Self-Supervised Temporal Pretraining (SSL)
 *Pretrains SharedEncoder on adjacent temporal cine pairs using masked patch reconstruction and feature consistency.*
 ```bash

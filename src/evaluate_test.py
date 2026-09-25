@@ -92,9 +92,10 @@ def evaluate_run(
     """Score one production run on the fixed test split (single pass)."""
     label_fraction, seed = parse_run_id(run_id)
     data_cfg = config.get("data", {})
+    log_cfg = config.get("logging", {})
 
     checkpoint_path = (
-        Path("checkpoints/experiments") / run_id / f"{run_id}_best.pth"
+        Path(log_cfg.get("checkpoint_dir", "checkpoints/experiments")) / run_id / f"{run_id}_best.pth"
     )
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -105,6 +106,13 @@ def evaluate_run(
 
     model = build_model_from_config(config, device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    provenance = checkpoint.get("experiment_name")
+    if provenance is None or str(provenance) != run_id:
+        raise ValueError(
+            f"Refusing to evaluate {checkpoint_path}: checkpoint provenance "
+            f"'{provenance}' does not match requested run '{run_id}'. "
+            "Only the run's own *_best.pth checkpoint may be evaluated."
+        )
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.eval()
 
@@ -172,7 +180,7 @@ def evaluate_run(
         "std": patient_results["std"],
     }
 
-    results_dir = Path("results/experiments") / run_id
+    results_dir = Path(log_cfg.get("results_dir", "results/experiments")) / run_id
     results_dir.mkdir(parents=True, exist_ok=True)
     output_path = results_dir / "test_metrics.json"
     output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")

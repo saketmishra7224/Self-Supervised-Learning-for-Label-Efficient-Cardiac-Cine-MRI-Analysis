@@ -132,7 +132,7 @@ python src/preprocess.py --config configs/preprocessing_config.yaml
 
 Splits are strictly partitioned at the **patient level** to prevent spatial data leakage across slices:
 - **Training Cohort**: 70 patients (1,324 labeled ED/ES slices, 22,000+ intermediate cine slices)
-- **Validation Cohort**: 10 patients (194 labeled slices)
+- **Validation Cohort**: 10 patients (180 labeled slices)
 - **Test Cohort**: 20 patients (398 labeled slices)
 - **Pathology Stratification**: Balanced distribution across all 5 diagnostic groups (NOR, MINF, DCM, HCM, ARV).
 
@@ -192,7 +192,7 @@ Implemented in [`src/pseudo_labels.py`](file:///c:/Users/Saket/OneDrive/Desktop/
 ## J. Limited-Label Fine-Tuning & Label Efficiency
 
 Implemented in [`src/experiment_runner.py`](file:///c:/Users/Saket/OneDrive/Desktop/UROP/motion_guided_ssl_project/src/experiment_runner.py):
-- Evaluates the **20-run cross-product** (4 label fractions $\times$ 5 model variants, plus a backward-compatibility alias).
+- Evaluates the **20-run cross-product** (4 label fractions $\times$ 5 model variants). `ssl_motion_pseudo` is a backward-compatibility alias that maps to the `full_pipeline` variant, not an additional run.
 - Multi-objective joint loss formulation:
   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{sup}} + \lambda_{\text{motion}} \mathcal{L}_{\text{motion}} + \lambda_{\text{pseudo}} \mathcal{L}_{\text{pseudo}}$$
 - **Differential Learning Rates**: Encoder initialized with SSL weights trained at $1.0 \times 10^{-5}$; decoder trained at $1.0 \times 10^{-4}$.

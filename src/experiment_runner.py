@@ -66,18 +66,39 @@ def _cycled_batches(loader: DataLoader) -> Iterator[Dict[str, torch.Tensor]]:
             yield batch
 
 
-def validate_resume_checkpoint(resume_path: Union[str, Path], run_id: str) -> None:
+def validate_resume_checkpoint(
+    resume_path: Union[str, Path],
+    run_id: str,
+    mode: str,
+    label_fraction: int,
+    allow_legacy: bool = False,
+) -> None:
     """Fail closed on cross-experiment resume before any state is restored."""
     checkpoint = torch.load(str(resume_path), map_location="cpu", weights_only=False)
     provenance = checkpoint.get("experiment_name")
-    if provenance is None:
-        print(f"Warning: resume checkpoint {resume_path} carries no experiment "
-              f"provenance (legacy format); proceeding for run '{run_id}' "
-              "on operator responsibility.")
-    elif str(provenance) != run_id:
+    metadata = checkpoint.get("experiment_metadata") or {}
+    if provenance is None and not metadata:
+        if not allow_legacy:
+            raise ValueError(
+                f"Resume checkpoint {resume_path} carries no experiment "
+                f"provenance (legacy format). Refusing resume for run "
+                f"'{run_id}'. Re-run with --allow-legacy-resume only if you "
+                "have verified this checkpoint belongs to this run."
+            )
+        print(f"Warning: resuming run '{run_id}' from legacy checkpoint "
+              f"{resume_path} without provenance (explicitly allowed).")
+        return
+    problems = []
+    if provenance is not None and str(provenance) != run_id:
+        problems.append(f"experiment '{provenance}' != '{run_id}'")
+    if metadata.get("mode") is not None and str(metadata["mode"]) != str(mode):
+        problems.append(f"mode '{metadata['mode']}' != '{mode}'")
+    if metadata.get("label_fraction") is not None and int(metadata["label_fraction"]) != int(label_fraction):
+        problems.append(f"label fraction '{metadata['label_fraction']}' != '{label_fraction}'")
+    if problems:
         raise ValueError(
             f"Refusing cross-experiment resume: checkpoint {resume_path} "
-            f"belongs to experiment '{provenance}', not '{run_id}'."
+            f"mismatches run '{run_id}': " + "; ".join(problems)
         )
 
 
@@ -211,12 +232,18 @@ class FineTuneExperimentTrainer(Trainer):
         return {key: value / max(len(train_loader), 1) for key, value in totals.items()}
 
 
-def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, device: torch.device, ssl_checkpoint=None, resume=None, run_id=None, epochs_override=None, batch_size_override=None, smoke_test=False) -> Dict[str, Any]:
+def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, device: torch.device, ssl_checkpoint=None, resume=None, run_id=None, epochs_override=None, batch_size_override=None, smoke_test=False, allow_legacy_resume=False) -> Dict[str, Any]:
     variant, data_cfg, opt_cfg, loss_cfg, log_cfg = config["variants"][mode], config["data"], config["optimization"], config["loss"], config["logging"]
     train_split, val_split = data_cfg["subsets"][label_fraction], data_cfg["val_split"]
     train_patients, val_patients = _read_patient_ids(train_split), _read_patient_ids(val_split)
     if train_patients & val_patients:
         raise ValueError("Configured labeled train and validation patient splits overlap.")
+    # Motion regularization and pseudo-label pools always draw from the full
+    # 100% training pool, so verify that pool against validation even when
+    # the active labeled fraction is smaller.
+    full_train_patients = _read_patient_ids(data_cfg["subsets"][100])
+    if full_train_patients & val_patients:
+        raise ValueError("Full training pool (subsets[100]) overlaps the validation patient set.")
     train_dataset = ACDCSegDataset(data_cfg["processed_dir"], train_split, transform=get_train_transforms())
     val_dataset = ACDCSegDataset(data_cfg["processed_dir"], val_split, transform=get_val_transforms())
     if set(train_dataset.get_patient_ids()) & set(val_dataset.get_patient_ids()):
@@ -248,8 +275,9 @@ def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, devi
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if opt_cfg.get("scheduler", "cosine") == "cosine" else None
     criterion = DiceCELoss(num_classes=data_cfg.get("num_classes", 4), dice_weight=loss_cfg.get("dice_weight", 1.0), ce_weight=loss_cfg.get("ce_weight", 1.0), include_background=loss_cfg.get("include_background", False))
     trainer = FineTuneExperimentTrainer(model=model, optimizer=optimizer, criterion=criterion, device=device, scheduler=scheduler, mixed_precision=opt_cfg.get("mixed_precision", True), checkpoint_dir=str(checkpoint_dir), log_dir=str(results_dir / "logs"), experiment_name=run_id, motion_estimator=motion, temporal_loader=temporal_loader, pseudo_loader=pseudo_loader, motion_weight=float(loss_cfg.get("motion_weight", 0.1)), pseudo_weight=float(loss_cfg.get("pseudo_weight", 0.25)), freeze_encoder_epochs=int(variant.get("freeze_encoder_epochs", 0)))
+    trainer.experiment_metadata = {"mode": mode, "label_fraction": label_fraction, "seed": seed}
     if resume:
-        validate_resume_checkpoint(resume, run_id)
+        validate_resume_checkpoint(resume, run_id, mode, label_fraction, allow_legacy=allow_legacy_resume)
         trainer.load_checkpoint(resume)
     metadata = {"run_id": run_id, "mode": mode, "label_fraction": label_fraction, "seed": seed, "device": str(device), "train_patients": sorted(train_patients), "validation_patients": sorted(val_patients), "ssl_checkpoint": ssl_checkpoint or variant.get("ssl_checkpoint"), "motion_checkpoint": variant.get("motion_checkpoint"), "uses_pseudo_labels": variant.get("use_pseudo_labels", False), "pseudo_label_source": str(Path(log_cfg.get("pseudo_labels_dir", "results/pseudo_labels")) / f"{label_fraction}pct") if variant.get("use_pseudo_labels", False) else None, "robustness": {"status": "not_run", "config": config.get("robustness", {})}, "parameters": count_parameters(model)}
     (results_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -268,6 +296,7 @@ def main() -> None:
     parser.add_argument("--label-fraction", type=int, default=100, choices=[10, 25, 50, 100])
     parser.add_argument("--device", default="auto"); parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--ssl-checkpoint", default=None); parser.add_argument("--resume", default=None)
+    parser.add_argument("--allow-legacy-resume", action="store_true", help="Allow resume from a checkpoint without experiment provenance (legacy format only, on operator responsibility)")
     parser.add_argument("--run-id", default=None); parser.add_argument("--epochs", type=int, default=None); parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true", help="Run one CPU train/validation batch and save isolated smoke artifacts")
     args = parser.parse_args()
@@ -278,7 +307,7 @@ def main() -> None:
     run_id = args.run_id or (f"{args.mode}_{args.label_fraction}pct_seed{seed}_smoke" if args.smoke_test else None)
     epochs = 1 if args.smoke_test else args.epochs
     batch_size = 2 if args.smoke_test else args.batch_size
-    print(json.dumps(run_experiment(config, args.mode, args.label_fraction, seed, device, args.ssl_checkpoint, args.resume, run_id, epochs, batch_size, args.smoke_test), indent=2))
+    print(json.dumps(run_experiment(config, args.mode, args.label_fraction, seed, device, args.ssl_checkpoint, args.resume, run_id, epochs, batch_size, args.smoke_test, allow_legacy_resume=args.allow_legacy_resume), indent=2))
 
 
 if __name__ == "__main__":
