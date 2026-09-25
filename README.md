@@ -22,6 +22,7 @@
 - [M. Robustness & Stability Analysis](#m-robustness--stability-analysis)
 - [N. Training on a Separate GPU Machine](#n-training-on-a-separate-gpu-machine)
 - [O. Reproducibility & Environment Setup](#o-reproducibility--environment-setup)
+- [P. Final Full Pipeline Test Results](#p-final-full-pipeline-test-results)
 
 ---
 
@@ -191,7 +192,7 @@ Implemented in [`src/pseudo_labels.py`](file:///c:/Users/Saket/OneDrive/Desktop/
 ## J. Limited-Label Fine-Tuning & Label Efficiency
 
 Implemented in [`src/experiment_runner.py`](file:///c:/Users/Saket/OneDrive/Desktop/UROP/motion_guided_ssl_project/src/experiment_runner.py):
-- Evaluates the **16-experiment matrix** (4 label fractions $\times$ 4 model variants).
+- Evaluates the **20-run cross-product** (4 label fractions $\times$ 5 model variants, plus a backward-compatibility alias).
 - Multi-objective joint loss formulation:
   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{sup}} + \lambda_{\text{motion}} \mathcal{L}_{\text{motion}} + \lambda_{\text{pseudo}} \mathcal{L}_{\text{pseudo}}$$
 - **Differential Learning Rates**: Encoder initialized with SSL weights trained at $1.0 \times 10^{-5}$; decoder trained at $1.0 \times 10^{-4}$.
@@ -330,4 +331,41 @@ python src/aggregate_results.py --generate-plots
   python scripts/smoke_test.py
   ```
   Result: **10/10 pipeline checks passed successfully**.
+
+---
+
+## P. Final Full Pipeline Test Results
+
+Final single-pass patient-level evaluation of the four completed Full Pipeline
+(`full_pipeline`, seed 42) experiments on the fixed 20-patient held-out ACDC
+test split (`data/splits/test_patients.txt`, 398 test slices), scored from each
+run's `*_best.pth` checkpoint with `src/evaluate_test.py`. Metrics are averaged
+within each patient first, then reported as mean $\pm$ std across the 20
+patients. HD95 is reported in mm (voxel spacing $1.5 \times 1.5$ mm). No
+test-time checkpoint selection or tuning was performed.
+
+| Label fraction | LV Dice | Myocardium Dice | RV Dice | Mean Dice | Mean HD95 (mm) |
+|---|---|---|---|---|---|
+| 10% | $0.7883 \pm 0.1533$ | $0.6814 \pm 0.1420$ | $0.5661 \pm 0.1852$ | $0.6786 \pm 0.1491$ | $32.5242 \pm 26.0524$ |
+| 25% | $0.8217 \pm 0.1269$ | $0.7367 \pm 0.1234$ | $0.6364 \pm 0.1710$ | $0.7316 \pm 0.1256$ | $22.2388 \pm 20.0432$ |
+| 50% | $0.8394 \pm 0.1389$ | $0.7664 \pm 0.1309$ | $0.6584 \pm 0.1617$ | $0.7547 \pm 0.1298$ | $17.6229 \pm 16.8289$ |
+| 100% | $0.8533 \pm 0.0937$ | $0.7938 \pm 0.1041$ | $0.7244 \pm 0.1126$ | $0.7905 \pm 0.0935$ | $13.2623 \pm 12.7796$ |
+
+Per-run auditable records (per-patient metrics, mean, std):
+- `results/experiments/full_pipeline_10pct_seed42/test_metrics.json`
+- `results/experiments/full_pipeline_25pct_seed42/test_metrics.json`
+- `results/experiments/full_pipeline_50pct_seed42/test_metrics.json`
+- `results/experiments/full_pipeline_100pct_seed42/test_metrics.json`
+
+Label-efficiency figures:
+- `results/figures/final_mean_dice_vs_label_fraction.png`
+- `results/figures/final_mean_hd95_vs_label_fraction.png`
+- `results/figures/final_per_class_dice_vs_label_fraction.png`
+- `results/figures/final_per_class_hd95_vs_label_fraction.png`
+
+Scope note: this final evaluation reports Dice and HD95 only. Temporal
+consistency metrics were not included because the repository has no existing
+end-to-end test-time temporal evaluation path. Ablation, robustness, and
+calibration analyses are described as protocol (§K–M); only results backed by
+repository artifacts are claimed above.
 "# Self-Supervised-Learning-for-Label-Efficient-Cardiac-Cine-MRI-Analysis" 

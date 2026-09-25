@@ -29,7 +29,7 @@ The following requirements are derived directly from the model architecture, ten
 ### Disk Storage
 - **Raw ACDC Dataset**: $\approx 2.5\text{ GB}$ (compressed zip $+$ extracted NIfTI volumes).
 - **Preprocessed Slices**: $\approx 3.5\text{ GB}$ ($25,351$ compressed 2D `.npz` slices).
-- **Model Checkpoints**: $\approx 500\text{ MB}$ (baseline, SSL, motion, and 16 experiment checkpoints).
+- **Model Checkpoints**: $\approx 500\text{ MB}$ (baseline, SSL, motion, and 20 fine-tuning runs: 4 label fractions $\times$ 5 variants).
 - **Logs, Tables, & Figures**: $\approx 200\text{ MB}$.
 - **Total Recommended Free Disk Space**: **$\ge 15\text{ GB}$** on SSD storage.
 
@@ -199,7 +199,7 @@ python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cpu --s
 # TRAINING MACHINE COMMAND:
 python src/pseudo_labels.py --config configs/pseudo_labels.yaml --device cuda \
   --label-fraction 10 \
-  --teacher-checkpoint checkpoints/experiments/supervised_10pct_best.pth
+  --teacher-checkpoint checkpoints/experiments/supervised_10pct_seed42/supervised_10pct_seed42_best.pth
 ```
 - **Output Directory**: `results/pseudo_labels/`
   - `labels/*.npz` contains both `raw_pseudo_label` and `filtered_pseudo_label`.
