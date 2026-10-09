@@ -38,7 +38,6 @@ from src.evaluate_test import (
     build_model_from_config,
     parse_run_id,
 )
-from src.segmentation_model import SegmentationUNet
 
 # Discrete mask colors: 0 background (unused/transparent), 1 LV red,
 # 2 myocardium green, 3 RV blue.
@@ -60,7 +59,7 @@ def resolve_checkpoint(run_id: str) -> Path:
 
 def load_production_model(
     run_id: str, config: dict, device: torch.device
-) -> SegmentationUNet:
+) -> torch.nn.Module:
     """Load a production checkpoint without modifying or resaving it."""
     checkpoint_path = resolve_checkpoint(run_id)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -109,7 +108,7 @@ def select_examples(dataset: ACDCSegDataset) -> list:
 
 @torch.no_grad()
 def predict_indices(
-    model: SegmentationUNet, dataset: ACDCSegDataset, indices: list, device: torch.device
+    model: torch.nn.Module, dataset: ACDCSegDataset, indices: list, device: torch.device
 ) -> dict:
     """Run inference for the selected sample indices (no gradients)."""
     loader = DataLoader(dataset, batch_size=8, shuffle=False, num_workers=0)

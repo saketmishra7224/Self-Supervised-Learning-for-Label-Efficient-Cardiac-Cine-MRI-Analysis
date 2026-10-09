@@ -1,0 +1,33 @@
+{
+  "metadata": {
+    "source_split": "data/splits/train_patients.txt",
+    "coordinate_convention": "x_min, y_min, x_max, y_max in 256x256 image coordinates",
+    "method": "5th percentile of minima / 95th percentile of maxima over labeled training slices",
+    "classes": {
+      "1": "LV",
+      "2": "myocardium",
+      "3": "RV"
+    },
+    "n_labeled_slices_used": 1324
+  },
+  "boxes": {
+    "1": [
+      93.75,
+      90.0,
+      161.0,
+      153.25
+    ],
+    "2": [
+      88.0,
+      83.0,
+      167.0,
+      159.0
+    ],
+    "3": [
+      76.0,
+      66.0,
+      175.75,
+      141.0
+    ]
+  }
+}

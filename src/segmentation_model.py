@@ -204,6 +204,21 @@ def build_segmentation_model(
     
     in_channels = model_cfg.get('in_channels', 1)
     num_classes = model_cfg.get('num_classes', data_cfg.get('num_classes', 4))
+    architecture = model_cfg.get('architecture', '2d_unet')
+
+    # Comparison baselines dispatch through the registry; the default
+    # 2d_unet path below is unchanged.
+    if architecture != '2d_unet':
+        from .baseline_models import build_baseline_model
+        extra = dict(model_cfg.get('medsam', {})) if architecture == 'medsam' else {}
+        return build_baseline_model(
+            architecture,
+            num_classes=num_classes,
+            in_channels=in_channels,
+            pretrained=model_cfg.get('pretrained', True),
+            **extra,
+        )
+
     encoder_channels = model_cfg.get('encoder_channels', [32, 64, 128, 256])
     dropout = model_cfg.get('dropout', 0.1)
     use_residual = model_cfg.get('use_residual', True)

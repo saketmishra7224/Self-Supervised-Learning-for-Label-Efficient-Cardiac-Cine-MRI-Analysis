@@ -157,10 +157,44 @@ def _load_motion_checkpoint(model: MotionEstimator, checkpoint_path: Path, devic
         parameter.requires_grad_(False)
 
 
-def build_experiment_model(config: dict, mode: str, ssl_checkpoint: Optional[str], device: torch.device) -> Tuple[SegmentationUNet, Optional[MotionEstimator]]:
+def _encoder_decoder_params(model: torch.nn.Module):
+    """Split trainable parameters into (decoder_params, encoder_params).
+
+    Models exposing both ``.encoder`` and ``.decoder`` keep the differential
+    learning-rate grouping; any remaining parameters (e.g. auxiliary heads)
+    join the decoder group so no trainable parameter is silently omitted.
+    Models without both attributes train all parameters at the base rate.
+    """
+    enc = getattr(model, "encoder", None)
+    dec = getattr(model, "decoder", None)
+    if enc is None or dec is None:
+        return list(model.parameters()), []
+    enc_ids = {id(p) for p in enc.parameters()}
+    dec_ids = {id(p) for p in dec.parameters()}
+    decoder_params = [p for p in dec.parameters()] + [
+        p for p in model.parameters() if id(p) not in enc_ids and id(p) not in dec_ids
+    ]
+    return decoder_params, list(enc.parameters())
+
+
+def build_experiment_model(config: dict, mode: str, ssl_checkpoint: Optional[str], device: torch.device) -> Tuple[torch.nn.Module, Optional[MotionEstimator]]:
     model_cfg, variant = config["model"], config["variants"][mode]
-    model = SegmentationUNet(in_channels=model_cfg.get("in_channels", 1), num_classes=model_cfg.get("num_classes", 4), encoder_channels=model_cfg.get("encoder_channels", [32, 64, 128, 256]), dropout=model_cfg.get("dropout", 0.1), use_residual=model_cfg.get("use_residual", True)).to(device)
+    architecture = model_cfg.get("architecture", "2d_unet")
+    if architecture == "2d_unet":
+        model = SegmentationUNet(in_channels=model_cfg.get("in_channels", 1), num_classes=model_cfg.get("num_classes", 4), encoder_channels=model_cfg.get("encoder_channels", [32, 64, 128, 256]), dropout=model_cfg.get("dropout", 0.1), use_residual=model_cfg.get("use_residual", True)).to(device)
+    else:
+        # Comparison baselines resolve through the registry so a requested
+        # architecture can never silently train as the original U-Net.
+        from .baseline_models import build_baseline_model
+        model = build_baseline_model(
+            architecture,
+            num_classes=model_cfg.get("num_classes", 4),
+            in_channels=model_cfg.get("in_channels", 1),
+            pretrained=model_cfg.get("pretrained", True),
+        ).to(device)
     if variant.get("use_ssl_pretrained", False):
+        if architecture != "2d_unet":
+            raise ValueError(f"{mode} requests SSL-pretrained weights, which only exist for the 2d_unet encoder; refusing to load them into {architecture}.")
         path = Path(ssl_checkpoint or variant["ssl_checkpoint"])
         if not path.exists():
             raise FileNotFoundError(f"{mode} requires an SSL checkpoint, but it is missing: {path}")
@@ -194,8 +228,10 @@ class FineTuneExperimentTrainer(Trainer):
         self.motion_weight, self.pseudo_weight, self.freeze_encoder_epochs = motion_weight, pseudo_weight, freeze_encoder_epochs
 
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        for parameter in self.model.encoder.parameters():
-            parameter.requires_grad_(epoch > self.freeze_encoder_epochs)
+        encoder = getattr(self.model, "encoder", None)
+        if encoder is not None:
+            for parameter in encoder.parameters():
+                parameter.requires_grad_(epoch > self.freeze_encoder_epochs)
         self.model.train()
         if self.motion_estimator is not None:
             self.motion_estimator.eval()
@@ -271,7 +307,11 @@ def run_experiment(config: dict, mode: str, label_fraction: int, seed: int, devi
     run_id = run_id or f"{mode}_{label_fraction}pct_seed{seed}"
     checkpoint_dir, results_dir = Path(log_cfg["checkpoint_dir"]) / run_id, Path(log_cfg["results_dir"]) / run_id
     results_dir.mkdir(parents=True, exist_ok=True)
-    optimizer = torch.optim.AdamW([{"params": model.decoder.parameters(), "lr": float(opt_cfg.get("lr_decoder", 1e-4))}, {"params": model.encoder.parameters(), "lr": float(opt_cfg.get("lr_encoder", 1e-5))}], weight_decay=float(opt_cfg.get("weight_decay", 1e-5)))
+    decoder_params, encoder_params = _encoder_decoder_params(model)
+    opt_groups = [{"params": decoder_params, "lr": float(opt_cfg.get("lr_decoder", 1e-4))}]
+    if encoder_params:
+        opt_groups.append({"params": encoder_params, "lr": float(opt_cfg.get("lr_encoder", 1e-5))})
+    optimizer = torch.optim.AdamW(opt_groups, weight_decay=float(opt_cfg.get("weight_decay", 1e-5)))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if opt_cfg.get("scheduler", "cosine") == "cosine" else None
     criterion = DiceCELoss(num_classes=data_cfg.get("num_classes", 4), dice_weight=loss_cfg.get("dice_weight", 1.0), ce_weight=loss_cfg.get("ce_weight", 1.0), include_background=loss_cfg.get("include_background", False))
     trainer = FineTuneExperimentTrainer(model=model, optimizer=optimizer, criterion=criterion, device=device, scheduler=scheduler, mixed_precision=opt_cfg.get("mixed_precision", True), checkpoint_dir=str(checkpoint_dir), log_dir=str(results_dir / "logs"), experiment_name=run_id, motion_estimator=motion, temporal_loader=temporal_loader, pseudo_loader=pseudo_loader, motion_weight=float(loss_cfg.get("motion_weight", 0.1)), pseudo_weight=float(loss_cfg.get("pseudo_weight", 0.25)), freeze_encoder_epochs=int(variant.get("freeze_encoder_epochs", 0)))

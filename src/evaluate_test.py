@@ -28,7 +28,7 @@ from tqdm import tqdm
 
 from src.dataset import ACDCSegDataset, get_val_transforms
 from src.metrics import compute_metrics_batch, compute_patient_level_metrics
-from src.segmentation_model import SegmentationUNet
+from src.segmentation_model import build_segmentation_model
 
 # Physical in-plane spacing (mm) of the preprocessed 256x256 volumes.
 # Required so HD95 is reported in mm as documented; the training-time
@@ -70,16 +70,15 @@ def parse_run_id(run_id: str) -> tuple:
     return int(match.group(1)), int(match.group(2))
 
 
-def build_model_from_config(config: dict, device: torch.device) -> SegmentationUNet:
-    """Construct the training-time SegmentationUNet from experiments.yaml."""
-    model_cfg = config.get("model", {})
-    return SegmentationUNet(
-        in_channels=model_cfg.get("in_channels", 1),
-        num_classes=model_cfg.get("num_classes", 4),
-        encoder_channels=model_cfg.get("encoder_channels", [32, 64, 128, 256]),
-        dropout=model_cfg.get("dropout", 0.1),
-        use_residual=model_cfg.get("use_residual", True),
-    ).to(device)
+def build_model_from_config(config: dict, device: torch.device) -> torch.nn.Module:
+    """Construct the training-time model from config via the canonical dispatcher.
+
+    Architecture-aware: resolves ``model.architecture`` through
+    ``segmentation_model.build_segmentation_model`` (default ``2d_unet``
+    behavior unchanged), so baseline checkpoints load into the model class
+    that produced them.
+    """
+    return build_segmentation_model(config).to(device)
 
 
 def evaluate_run(
