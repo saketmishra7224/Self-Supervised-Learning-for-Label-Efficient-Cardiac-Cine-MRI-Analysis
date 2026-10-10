@@ -29,7 +29,7 @@ from src.dataset import ACDCSegDataset, ACDCTemporalDataset, get_train_transform
 from src.encoder import count_parameters, load_encoder_weights
 from src.losses import DiceCELoss
 from src.motion import MotionEstimator
-from src.segmentation_model import SegmentationUNet
+from src.segmentation_model import build_segmentation_model
 from src.train import Trainer, compute_val_metrics_wrapper
 
 
@@ -180,18 +180,10 @@ def _encoder_decoder_params(model: torch.nn.Module):
 def build_experiment_model(config: dict, mode: str, ssl_checkpoint: Optional[str], device: torch.device) -> Tuple[torch.nn.Module, Optional[MotionEstimator]]:
     model_cfg, variant = config["model"], config["variants"][mode]
     architecture = model_cfg.get("architecture", "2d_unet")
-    if architecture == "2d_unet":
-        model = SegmentationUNet(in_channels=model_cfg.get("in_channels", 1), num_classes=model_cfg.get("num_classes", 4), encoder_channels=model_cfg.get("encoder_channels", [32, 64, 128, 256]), dropout=model_cfg.get("dropout", 0.1), use_residual=model_cfg.get("use_residual", True)).to(device)
-    else:
-        # Comparison baselines resolve through the registry so a requested
-        # architecture can never silently train as the original U-Net.
-        from .baseline_models import build_baseline_model
-        model = build_baseline_model(
-            architecture,
-            num_classes=model_cfg.get("num_classes", 4),
-            in_channels=model_cfg.get("in_channels", 1),
-            pretrained=model_cfg.get("pretrained", True),
-        ).to(device)
+    # Every architecture resolves through the canonical dispatcher, so a
+    # requested baseline can never silently train as the original U-Net.
+    # The default 2d_unet path inside the dispatcher is unchanged.
+    model = build_segmentation_model(config).to(device)
     if variant.get("use_ssl_pretrained", False):
         if architecture != "2d_unet":
             raise ValueError(f"{mode} requests SSL-pretrained weights, which only exist for the 2d_unet encoder; refusing to load them into {architecture}.")
