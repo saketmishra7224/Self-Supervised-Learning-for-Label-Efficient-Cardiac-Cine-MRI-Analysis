@@ -15,6 +15,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
@@ -46,6 +47,14 @@ PRODUCTION_RUN_IDS = [
 
 _RUN_ID_PATTERN = re.compile(r"^full_pipeline_(\d+)pct_seed(\d+)$")
 
+# Conservative run-ID shape for non-production runs evaluated through an
+# explicit --checkpoint-path. Rejects path traversal and empty IDs; the
+# checkpoint-provenance gate below still binds checkpoint to run.
+_SAFE_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+
+# Label fractions recognized for explicitly labeled runs.
+KNOWN_LABEL_FRACTIONS = (10, 25, 50, 100)
+
 # Canonical fixed 20-patient test cohort. Results may only be written when
 # the evaluated patient IDs match this cohort exactly.
 CANONICAL_TEST_SPLIT = Path("data/splits/test_patients.txt")
@@ -70,6 +79,78 @@ def parse_run_id(run_id: str) -> tuple:
     return int(match.group(1)), int(match.group(2))
 
 
+def validate_safe_run_id(run_id: str) -> str:
+    """Reject run IDs that are unsafe as path components (traversal, empty)."""
+    if not _SAFE_RUN_ID_PATTERN.match(run_id):
+        raise ValueError(
+            f"Refusing unsafe run ID '{run_id}'. Use alphanumeric characters, "
+            "underscore, dot, or hyphen."
+        )
+    return run_id
+
+
+def resolve_checkpoint(
+    run_id: str,
+    checkpoint_dir: str = "checkpoints/experiments",
+    checkpoint_path_override: Optional[str] = None,
+) -> Path:
+    """Resolve the ``*_best.pth`` checkpoint for a run.
+
+    Default layout (unchanged): ``<checkpoint_dir>/<run_id>/<run_id>_best.pth``,
+    as produced by the experiment runner. With ``checkpoint_path_override``,
+    an explicit file is used instead (e.g. ``train.py``-layout checkpoints
+    such as ``checkpoints/<experiment>_best.pth``); the override must exist
+    and its filename must end with ``_best.pth`` so only best-checkpoint
+    selection is ever evaluated.
+    """
+    validate_safe_run_id(run_id)
+    if checkpoint_path_override is not None:
+        path = Path(checkpoint_path_override)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Checkpoint override not found: {path}."
+            )
+        if path.name.endswith("_best.pth"):
+            return path
+        raise ValueError(
+            f"Checkpoint override must point at a '*_best.pth' file, got: {path}. "
+            "Only best-checkpoint selection is evaluated."
+        )
+    path = Path(checkpoint_dir) / run_id / f"{run_id}_best.pth"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Production checkpoint not found: {path}. "
+            "Only *_best.pth checkpoints are evaluated."
+        )
+    return path
+
+
+def resolve_fraction_seed(
+    run_id: str,
+    label_fraction_override: Optional[int] = None,
+    seed_override: Optional[int] = None,
+) -> tuple:
+    """Resolve (label_fraction, seed) for the results record.
+
+    Production run IDs parse as before. Any other run ID requires both
+    values explicitly so the record is never silently mislabeled.
+    """
+    match = _RUN_ID_PATTERN.match(run_id)
+    if match is not None and run_id in PRODUCTION_RUN_IDS:
+        return int(match.group(1)), int(match.group(2))
+    if label_fraction_override is None or seed_override is None:
+        raise ValueError(
+            f"Run ID '{run_id}' is not a known production run; pass explicit "
+            "--label-fraction and --seed so the results record is accurate."
+        )
+    if int(label_fraction_override) not in KNOWN_LABEL_FRACTIONS:
+        raise ValueError(
+            f"Label fraction {label_fraction_override} is not a known project "
+            f"fraction {list(KNOWN_LABEL_FRACTIONS)}."
+        )
+    return int(label_fraction_override), int(seed_override)
+
+
 def build_model_from_config(config: dict, device: torch.device) -> torch.nn.Module:
     """Construct the training-time model from config via the canonical dispatcher.
 
@@ -87,20 +168,30 @@ def evaluate_run(
     device: torch.device,
     batch_size: int = 8,
     processed_dir_override=None,
+    checkpoint_path_override: Optional[str] = None,
+    label_fraction_override: Optional[int] = None,
+    seed_override: Optional[int] = None,
 ) -> dict:
     """Score one production run on the fixed test split (single pass)."""
-    label_fraction, seed = parse_run_id(run_id)
     data_cfg = config.get("data", {})
     log_cfg = config.get("logging", {})
 
-    checkpoint_path = (
-        Path(log_cfg.get("checkpoint_dir", "checkpoints/experiments")) / run_id / f"{run_id}_best.pth"
-    )
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(
-            f"Production checkpoint not found: {checkpoint_path}. "
-            "Only *_best.pth checkpoints are evaluated."
+    if checkpoint_path_override is None:
+        # Legacy path: strict production allowlist.
+        label_fraction, seed = parse_run_id(run_id)
+    else:
+        # Explicit-checkpoint path: run ID must still be path-safe, and the
+        # checkpoint-provenance gate below binds checkpoint to run.
+        validate_safe_run_id(run_id)
+        label_fraction, seed = resolve_fraction_seed(
+            run_id, label_fraction_override, seed_override
         )
+
+    checkpoint_path = resolve_checkpoint(
+        run_id,
+        log_cfg.get("checkpoint_dir", "checkpoints/experiments"),
+        checkpoint_path_override,
+    )
     test_split = data_cfg.get("test_split", "data/splits/test_patients.txt")
 
     model = build_model_from_config(config, device)
@@ -213,9 +304,33 @@ def main() -> None:
         default=None,
         help="Override the processed ACDC data directory used for final test evaluation.",
     )
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Evaluate a non-production run (e.g. a train.py baseline checkpoint). "
+        "Must point at an existing '*_best.pth' file; the checkpoint-provenance "
+        "gate still applies. Requires --label-fraction and --seed unless the "
+        "run ID is a known production run.",
+    )
+    parser.add_argument(
+        "--label-fraction",
+        type=int,
+        default=None,
+        help="Label fraction recorded in the results (required with --checkpoint-path "
+        "for non-production run IDs).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed recorded in the results (required with --checkpoint-path "
+        "for non-production run IDs).",
+    )
     args = parser.parse_args()
 
     if args.all:
+        if args.checkpoint_path is not None:
+            parser.error("--checkpoint-path cannot be combined with --all; evaluate one --run-id at a time.")
         run_ids = list(PRODUCTION_RUN_IDS)
     elif args.run_id is not None:
         run_ids = [args.run_id]
@@ -228,7 +343,10 @@ def main() -> None:
         else "cpu" if args.device == "auto" else args.device
     )
     for run_id in run_ids:
-        print_summary(evaluate_run(run_id, config, device, args.batch_size, args.processed_dir))
+        print_summary(evaluate_run(run_id, config, device, args.batch_size, args.processed_dir,
+                                   checkpoint_path_override=args.checkpoint_path,
+                                   label_fraction_override=args.label_fraction,
+                                   seed_override=args.seed))
 
 
 if __name__ == "__main__":

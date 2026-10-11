@@ -1,0 +1,60 @@
+# =============================================================================
+# Baseline Cardiac Cine MRI 4-Class Segmentation (nn-TransUNet, paper protocol)
+# =============================================================================
+# nn-TransUNet (Zhao et al., Life 2022;12(10):1570): R50-ViT-B/16 paper
+# architecture + nnU-Net-style paper training protocol. This config is
+# consumed ONLY by src/train_nntransunet.py -- src/train.py would silently
+# apply the wrong optimizer/scheduler/monitor, so it must not be used here.
+#
+# Locked paper values (see src/nntransunet.py NNTRANSUNET_TRAINING):
+# SGD + Nesterov (momentum 0.99), lr 0.01, PolynomialLR (power 0.9) stepped
+# per epoch, 500 epochs x 250 iterations/epoch, batch size fitted to GPU RAM
+# (paper: 36 on 24 GB; 12 is the conservative T4 default -- confirm against
+# run_nnunet_reference_planning() output at launch), best checkpoint by
+# validation loss, NO early stopping.
+
+experiment_name: "baseline_nntransunet"
+random_seed: 42
+device: "auto"  # 'auto' automatically selects GPU if available, else CPU
+
+data:
+  processed_dir: "data/processed"
+  splits_dir: "data/splits"
+  train_split: "data/splits/train_patients.txt"
+  val_split: "data/splits/val_patients.txt"
+  test_split: "data/splits/test_patients.txt"
+  image_size: [256, 256]  # [H, W] in-plane resolution
+  num_classes: 4  # 0=Background, 1=LV cavity, 2=Myocardium, 3=RV cavity
+  num_workers: 0  # 0 for safe CPU/multiprocessing portability; 4-8 on Linux/GPU
+  label_fraction: 1.0  # 1.0 (100%), 0.50 (50%), 0.25 (25%), 0.10 (10%)
+
+model:
+  architecture: "nn_transunet"
+  in_channels: 1
+  num_classes: 4
+  pretrained: true  # ImageNet-21k ViT-B/16 + ImageNet-1k ResNet-50 stem (canonical)
+
+training:
+  # Paper protocol (honored by src/train_nntransunet.py, NOT by src/train.py):
+  batch_size: 12
+  epochs: 500
+  iters_per_epoch: 250
+  optimizer: "sgd"  # SGD + Nesterov, momentum 0.99, weight_decay 0.0
+  learning_rate: 0.01  # locked: tabulated paper value (see src/nntransunet.py)
+  momentum: 0.99
+  scheduler: "polynomial"  # PolynomialLR power 0.9, stepped per epoch
+  lr_power: 0.9
+  monitor_metric: "val_loss"  # best checkpoint by validation loss (minimize)
+  early_stopping: null  # paper uses none; runner disables it explicitly
+  mixed_precision: true  # Automatically disabled if running on CPU
+
+loss:
+  type: "dice_ce"
+  dice_weight: 1.0
+  ce_weight: 1.0
+  include_background: false  # Exclude background class 0 from Dice loss calculation
+
+logging:
+  checkpoint_dir: "checkpoints"
+  output_dir: "results/baseline"
+  log_dir: "results/logs"

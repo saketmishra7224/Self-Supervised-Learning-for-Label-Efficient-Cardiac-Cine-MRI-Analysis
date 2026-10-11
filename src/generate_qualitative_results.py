@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 
@@ -37,6 +38,9 @@ from src.evaluate_test import (
     PRODUCTION_RUN_IDS,
     build_model_from_config,
     parse_run_id,
+    resolve_checkpoint as resolve_test_checkpoint,
+    resolve_fraction_seed,
+    validate_safe_run_id,
 )
 
 # Discrete mask colors: 0 background (unused/transparent), 1 LV red,
@@ -48,33 +52,38 @@ MASK_CMAP = ListedColormap(["black", "#e41a1c", "#4daf4a", "#377eb8"])
 EXAMPLE_PATIENT_POSITIONS = (0, 10)
 
 
-def resolve_checkpoint(run_id: str) -> Path:
-    """Return the exact production checkpoint path for an allowlisted run."""
-    parse_run_id(run_id)  # rejects anything outside PRODUCTION_RUN_IDS
-    path = Path("checkpoints/experiments") / run_id / f"{run_id}_best.pth"
-    if not path.exists():
-        raise FileNotFoundError(f"Production checkpoint not found: {path}")
-    return path
+def resolve_checkpoint(
+    run_id: str,
+    checkpoint_dir: str = "checkpoints/experiments",
+    checkpoint_path_override: Optional[str] = None,
+) -> Path:
+    """Return the checkpoint path for a run.
+
+    Delegates to the shared evaluator resolver so both scripts accept the
+    same layouts: the experiments ``<run_id>/<run_id>_best.pth`` layout by
+    default, or an explicit ``*_best.pth`` file (e.g. train.py layout).
+    """
+    return resolve_test_checkpoint(run_id, checkpoint_dir, checkpoint_path_override)
 
 
 def load_production_model(
-    run_id: str, config: dict, device: torch.device
+    run_id: str, config: dict, device: torch.device,
+    checkpoint_dir: str = "checkpoints/experiments",
+    checkpoint_path_override: Optional[str] = None,
 ) -> torch.nn.Module:
     """Load a production checkpoint without modifying or resaving it."""
-    checkpoint_path = resolve_checkpoint(run_id)
+    checkpoint_path = resolve_checkpoint(run_id, checkpoint_dir, checkpoint_path_override)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     provenance = checkpoint.get("experiment_name")
-    if provenance is not None:
-        if str(provenance) != run_id:
-            raise ValueError(
-                f"Refusing {checkpoint_path}: checkpoint provenance "
-                f"'{provenance}' does not match requested run '{run_id}'."
-            )
-    else:
-        print(
-            f"Note: {checkpoint_path} is a legacy checkpoint without embedded "
-            f"provenance; continuing only because '{run_id}' was explicitly "
-            "selected from the fixed production allowlist."
+    if provenance is None or str(provenance) != run_id:
+        # Fail closed, consistent with src/evaluate_test.py: checkpoints
+        # without embedded provenance are rejected on both the production
+        # layout path and the explicit --checkpoint-path override path.
+        # Only the run's own *_best.pth checkpoint may be visualized.
+        raise ValueError(
+            f"Refusing {checkpoint_path}: checkpoint provenance "
+            f"'{provenance}' does not match requested run '{run_id}'. "
+            "Only the run's own *_best.pth checkpoint may be visualized."
         )
     model = build_model_from_config(config, device)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -200,9 +209,31 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--processed-dir", default=None)
     parser.add_argument("--output-dir", default="results/figures/qualitative")
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Visualize a non-production run (e.g. a train.py baseline checkpoint). "
+        "Must point at an existing '*_best.pth' file. Requires --label-fraction "
+        "and --seed unless the run ID is a known production run.",
+    )
+    parser.add_argument(
+        "--label-fraction",
+        type=int,
+        default=None,
+        help="Label fraction recorded in figure titles (required with --checkpoint-path "
+        "for non-production run IDs).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed (required with --checkpoint-path for non-production run IDs).",
+    )
     args = parser.parse_args()
 
     if args.all:
+        if args.checkpoint_path is not None:
+            parser.error("--checkpoint-path cannot be combined with --all; visualize one --run-id at a time.")
         run_ids = list(PRODUCTION_RUN_IDS)
     elif args.run_id is not None:
         run_ids = [args.run_id]
@@ -211,6 +242,7 @@ def main() -> None:
 
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     data_cfg = config.get("data", {})
+    log_cfg = config.get("logging", {})
     device = torch.device(
         "cuda" if args.device == "auto" and torch.cuda.is_available()
         else "cpu" if args.device == "auto" else args.device
@@ -233,8 +265,18 @@ def main() -> None:
 
     per_run_preds = {}
     for run_id in tqdm(run_ids, desc="Qualitative runs"):
-        label_fraction, _ = parse_run_id(run_id)
-        model = load_production_model(run_id, config, device)
+        if args.checkpoint_path is None:
+            label_fraction, _ = parse_run_id(run_id)
+        else:
+            validate_safe_run_id(run_id)
+            label_fraction, _ = resolve_fraction_seed(
+                run_id, args.label_fraction, args.seed
+            )
+        model = load_production_model(
+            run_id, config, device,
+            checkpoint_dir=log_cfg.get("checkpoint_dir", "checkpoints/experiments"),
+            checkpoint_path_override=args.checkpoint_path,
+        )
         preds = predict_indices(model, dataset, example_indices, device)
         ordered = [preds[i] for i in example_indices]
         per_run_preds[run_id] = ordered

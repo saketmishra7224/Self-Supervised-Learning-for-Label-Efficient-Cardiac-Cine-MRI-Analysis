@@ -16,6 +16,7 @@ Covered here (conventional CNN baselines):
 The default "2d_unet" path lives in src.segmentation_model and is untouched.
 """
 
+import inspect
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -394,4 +395,16 @@ def build_baseline_model(
             f"Unknown baseline architecture: {architecture!r}. "
             f"Available: {sorted(BASELINE_BUILDERS)} (plus '2d_unet' via segmentation_model)."
         )
+    if kwargs:
+        # Explicit per-builder validation: reject unsupported arguments with
+        # a clear error instead of silently discarding them or crashing deep
+        # inside a builder. Builders accepting **kwargs take all of them.
+        params = inspect.signature(builder).parameters
+        if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            unexpected = sorted(set(kwargs) - set(params))
+            if unexpected:
+                raise TypeError(
+                    f"Builder for architecture {architecture!r} does not accept "
+                    f"argument(s): {unexpected}. Accepted: {sorted(params)}."
+                )
     return builder(num_classes=num_classes, in_channels=in_channels, pretrained=pretrained, **kwargs)
