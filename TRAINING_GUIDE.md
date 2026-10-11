@@ -178,10 +178,10 @@ python src/experiment_runner.py --mode supervised --label-fraction 100 --seed 42
 *Pretrains SharedEncoder on adjacent temporal cine pairs using masked patch reconstruction and feature consistency.*
 ```bash
 # DEVELOPMENT / CPU TEST:
-python src/ssl.py --config configs/ssl.yaml --device cpu
+python src/ssl_pretraining.py --config configs/ssl.yaml --device cpu
 
 # TRAINING MACHINE COMMAND:
-python src/ssl.py --config configs/ssl.yaml --device cuda
+python src/ssl_pretraining.py --config configs/ssl.yaml --device cuda
 ```
 - **Output Checkpoint**: `checkpoints/ssl/ssl_encoder_best.pth`
 
@@ -292,7 +292,7 @@ The following table details how model weights flow across training stages:
 
 | Stage | Producer Script | Output Checkpoint | Consumer Script | Consumer Argument |
 |---|---|---|---|---|
-| **SSL Pretraining** | `src/ssl.py` | `checkpoints/ssl/ssl_encoder_best.pth` | `src/experiment_runner.py` | `--ssl-checkpoint` or `configs/experiments.yaml` |
+| **SSL Pretraining** | `src/ssl_pretraining.py` | `checkpoints/ssl/ssl_encoder_best.pth` | `src/experiment_runner.py` | `--ssl-checkpoint` or `configs/experiments.yaml` |
 | **Motion Pretraining** | `src/motion.py` | `checkpoints/motion/motion_model_best.pth` | `src/experiment_runner.py` | `configs/experiments.yaml:motion_checkpoint` |
 | **Baseline Segmentation** | `src/train.py` | `checkpoints/baseline_unet_best.pth` | `src/pseudo_labels.py` | `configs/pseudo_labels.yaml:checkpoint` |
 | **Fine-Tuning Runs** | `src/experiment_runner.py` | `checkpoints/experiments/{mode}_{frac}pct_seed{seed}/{mode}_{frac}pct_seed{seed}_{latest,best,final}.pth` | `src/experiment_runner.py` (`--resume` from `{mode}_{frac}pct_seed{seed}/{mode}_{frac}pct_seed{seed}_latest.pth`) / `src/evaluate_test.py` (single-pass test scoring from `{mode}_{frac}pct_seed{seed}_best.pth`) | `--resume` / `--run-id` + registry tracking |

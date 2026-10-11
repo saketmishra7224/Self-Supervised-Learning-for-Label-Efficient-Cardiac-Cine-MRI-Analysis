@@ -71,7 +71,7 @@ def test_02_imports():
     import src.dataset as dataset
     import src.encoder as encoder
     import src.segmentation_model as seg_model
-    import src.ssl as ssl_module
+    import src.ssl_pretraining as ssl_module
     import src.motion as motion_module
     import src.pseudo_labels as pseudo_module
     import src.losses as losses_module
@@ -185,7 +185,7 @@ def test_05_metrics():
 
 def test_06_ssl():
     step_header(6, "Verifying SSL Temporal Masked Autoencoder Components")
-    from src.ssl import SSLModel, compute_ssl_loss
+    from src.ssl_pretraining import SSLModel, compute_ssl_loss
 
     ssl_model = SSLModel(
         in_channels=1,

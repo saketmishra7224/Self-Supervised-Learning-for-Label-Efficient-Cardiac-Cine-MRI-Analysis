@@ -31,7 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from src.ssl import SSLModel, compute_ssl_loss, count_parameters
+from src.ssl_pretraining import SSLModel, compute_ssl_loss, count_parameters
 from src.encoder import SharedEncoder, load_encoder_weights
 from src.dataset import ACDCTemporalDataset
 

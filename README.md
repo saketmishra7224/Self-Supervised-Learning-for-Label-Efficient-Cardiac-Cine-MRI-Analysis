@@ -98,7 +98,7 @@ motion_guided_ssl_project/
 │   ├── dataset.py                 # PyTorch datasets with patient management
 │   ├── encoder.py                 # 4-stage residual SharedEncoder
 │   ├── segmentation_model.py     # 2D U-Net segmentation architecture
-│   ├── ssl.py                     # Temporal masked autoencoder & losses
+│   ├── ssl_pretraining.py          # Temporal masked autoencoder & losses
 │   ├── motion.py                  # FlowNet & SpatialTransformer warping
 │   ├── pseudo_labels.py           # Selective confidence filtering engine
 │   ├── losses.py                  # DiceCELoss & consistency formulations
@@ -155,7 +155,7 @@ Implemented in [`src/segmentation_model.py`](file:///c:/Users/Saket/OneDrive/Des
 
 ## G. Self-Supervised Temporal Pretraining (SSL)
 
-Implemented in [`src/ssl.py`](file:///c:/Users/Saket/OneDrive/Desktop/UROP/motion_guided_ssl_project/src/ssl.py):
+Implemented in [`src/ssl_pretraining.py`](./src/ssl_pretraining.py):
 - **Objective**: Learn anatomical and dynamic cardiac representations from unlabeled cine frames before segmentation fine-tuning.
 - **Components**:
   1. *Patch Masking*: Divides input frame $I_t$ into $16 \times 16$ non-overlapping patches and masks a random $50\%$ of them.
@@ -276,7 +276,7 @@ python src/train.py --config configs/baseline_config.yaml --device cuda
 
 ### Step 4: Self-Supervised Temporal Pretraining (RUN ON TRAINING MACHINE)
 ```bash
-python src/ssl.py --config configs/ssl.yaml --device cuda
+python src/ssl_pretraining.py --config configs/ssl.yaml --device cuda
 ```
 
 ### Step 5: Motion Estimator Pretraining (RUN ON TRAINING MACHINE)
