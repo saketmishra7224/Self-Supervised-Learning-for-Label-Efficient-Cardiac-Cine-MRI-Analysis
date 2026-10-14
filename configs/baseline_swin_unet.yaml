@@ -46,6 +46,6 @@ loss:
   include_background: false  # Exclude background class 0 from Dice loss calculation
 
 logging:
-  checkpoint_dir: "checkpoints"
+  checkpoint_dir: "checkpoints/baseline_swin_unet"
   output_dir: "results/baseline"
   log_dir: "results/logs"
