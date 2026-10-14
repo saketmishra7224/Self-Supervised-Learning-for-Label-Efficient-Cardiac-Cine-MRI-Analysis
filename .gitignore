@@ -25,3 +25,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.log
+
+# Generated pseudo-label arrays
+results/pseudo_labels/**/*.npz
