@@ -1,0 +1,57 @@
+{
+  "run_id": "full_pipeline_10pct_seed42",
+  "mode": "full_pipeline",
+  "label_fraction": 10,
+  "seed": 42,
+  "device": "cuda",
+  "train_patients": [
+    "patient001",
+    "patient006",
+    "patient017",
+    "patient027",
+    "patient034",
+    "patient070",
+    "patient078"
+  ],
+  "validation_patients": [
+    "patient002",
+    "patient016",
+    "patient029",
+    "patient031",
+    "patient042",
+    "patient060",
+    "patient066",
+    "patient079",
+    "patient083",
+    "patient098"
+  ],
+  "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+  "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+  "uses_pseudo_labels": true,
+  "pseudo_label_source": "results/pseudo_labels/10pct",
+  "robustness": {
+    "status": "not_run",
+    "config": {
+      "seeds": [
+        42,
+        123,
+        456
+      ],
+      "noise_levels": [
+        0.0,
+        0.05,
+        0.1
+      ],
+      "intensity_scalings": [
+        0.9,
+        1.0,
+        1.1
+      ],
+      "temporal_intervals": [
+        1,
+        2
+      ]
+    }
+  },
+  "parameters": 2012580
+}

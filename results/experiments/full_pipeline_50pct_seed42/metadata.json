@@ -1,0 +1,85 @@
+{
+  "run_id": "full_pipeline_50pct_seed42",
+  "mode": "full_pipeline",
+  "label_fraction": 50,
+  "seed": 42,
+  "device": "cuda",
+  "train_patients": [
+    "patient001",
+    "patient006",
+    "patient009",
+    "patient012",
+    "patient014",
+    "patient017",
+    "patient019",
+    "patient020",
+    "patient025",
+    "patient027",
+    "patient028",
+    "patient034",
+    "patient037",
+    "patient041",
+    "patient045",
+    "patient046",
+    "patient050",
+    "patient051",
+    "patient052",
+    "patient055",
+    "patient056",
+    "patient057",
+    "patient061",
+    "patient064",
+    "patient065",
+    "patient067",
+    "patient068",
+    "patient070",
+    "patient076",
+    "patient078",
+    "patient081",
+    "patient082",
+    "patient085",
+    "patient089",
+    "patient097"
+  ],
+  "validation_patients": [
+    "patient002",
+    "patient016",
+    "patient029",
+    "patient031",
+    "patient042",
+    "patient060",
+    "patient066",
+    "patient079",
+    "patient083",
+    "patient098"
+  ],
+  "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+  "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+  "uses_pseudo_labels": true,
+  "pseudo_label_source": "results/pseudo_labels/50pct",
+  "robustness": {
+    "status": "not_run",
+    "config": {
+      "seeds": [
+        42,
+        123,
+        456
+      ],
+      "noise_levels": [
+        0.0,
+        0.05,
+        0.1
+      ],
+      "intensity_scalings": [
+        0.9,
+        1.0,
+        1.1
+      ],
+      "temporal_intervals": [
+        1,
+        2
+      ]
+    }
+  },
+  "parameters": 2012580
+}

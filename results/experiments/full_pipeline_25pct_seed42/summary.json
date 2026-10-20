@@ -1,0 +1,78 @@
+{
+  "run_id": "full_pipeline_25pct_seed42",
+  "mode": "full_pipeline",
+  "label_fraction": 25,
+  "seed": 42,
+  "device": "cuda",
+  "train_patients": [
+    "patient001",
+    "patient006",
+    "patient009",
+    "patient014",
+    "patient017",
+    "patient019",
+    "patient027",
+    "patient034",
+    "patient045",
+    "patient046",
+    "patient050",
+    "patient065",
+    "patient070",
+    "patient078",
+    "patient085",
+    "patient089",
+    "patient097"
+  ],
+  "validation_patients": [
+    "patient002",
+    "patient016",
+    "patient029",
+    "patient031",
+    "patient042",
+    "patient060",
+    "patient066",
+    "patient079",
+    "patient083",
+    "patient098"
+  ],
+  "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+  "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+  "uses_pseudo_labels": true,
+  "pseudo_label_source": "results/pseudo_labels/25pct",
+  "robustness": {
+    "status": "not_run",
+    "config": {
+      "seeds": [
+        42,
+        123,
+        456
+      ],
+      "noise_levels": [
+        0.0,
+        0.05,
+        0.1
+      ],
+      "intensity_scalings": [
+        0.9,
+        1.0,
+        1.1
+      ],
+      "temporal_intervals": [
+        1,
+        2
+      ]
+    }
+  },
+  "parameters": 2012580,
+  "status": "complete",
+  "best_metric": 0.7522882484350188,
+  "best_epoch": 134,
+  "history_file": "checkpoints/experiments/full_pipeline_25pct_seed42/full_pipeline_25pct_seed42_history.json",
+  "benchmark": {
+    "last_epoch_seconds": 22.25524878501892,
+    "last_train_samples_per_second": 14.288764105574103,
+    "peak_vram_mb": 3533.68408203125,
+    "peak_ram_mb": 3580.20703125,
+    "latest_checkpoint_mb": 23.160082817077637
+  }
+}

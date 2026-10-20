@@ -1,0 +1,124 @@
+project:
+  name: motion_guided_ssl_experiments
+  seed: 42
+  device: auto
+data:
+  processed_dir: data/processed
+  splits_dir: data/splits
+  subsets:
+    10: data/splits/labeled_10.txt
+    25: data/splits/labeled_25.txt
+    50: data/splits/labeled_50.txt
+    100: data/splits/labeled_100.txt
+  val_split: data/splits/val_patients.txt
+  test_split: data/splits/test_patients.txt
+  image_size:
+  - 256
+  - 256
+  num_classes: 4
+  num_workers: 0
+model:
+  architecture: 2d_unet
+  in_channels: 1
+  num_classes: 4
+  encoder_channels:
+  - 32
+  - 64
+  - 128
+  - 256
+  dropout: 0.1
+  use_residual: true
+variants:
+  supervised:
+    name: A. Supervised Baseline
+    description: Fully supervised 2D U-Net baseline from random initialization
+    use_ssl_pretrained: false
+    use_motion: false
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 0
+  ssl_finetune:
+    name: B. SSL Only
+    description: 2D U-Net with SSL-pretrained SharedEncoder weights
+    use_ssl_pretrained: true
+    ssl_checkpoint: checkpoints/ssl/ssl_encoder_best.pth
+    use_motion: false
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 5
+  ssl_motion:
+    name: C. SSL + Motion
+    description: SSL fine-tuning regularized with motion-guided temporal consistency
+    use_ssl_pretrained: true
+    ssl_checkpoint: checkpoints/ssl/ssl_encoder_best.pth
+    use_motion: true
+    motion_checkpoint: checkpoints/motion/motion_model_best.pth
+    use_pseudo_labels: false
+    freeze_encoder_epochs: 5
+  ssl_pseudo:
+    name: D. SSL + Pseudo-Labels
+    description: SSL fine-tuning with confidence-filtered pseudo-labels (no motion)
+    use_ssl_pretrained: true
+    ssl_checkpoint: checkpoints/ssl/ssl_encoder_best.pth
+    use_motion: false
+    use_pseudo_labels: true
+    pseudo_label_config: configs/pseudo_labels.yaml
+    freeze_encoder_epochs: 5
+  full_pipeline:
+    name: E. Full Pipeline
+    description: 'Full proposed framework: SSL + Motion Regularization + Confidence-Filtered
+      Pseudo-Labels'
+    use_ssl_pretrained: true
+    ssl_checkpoint: checkpoints/ssl/ssl_encoder_best.pth
+    use_motion: true
+    motion_checkpoint: checkpoints/motion/motion_model_best.pth
+    use_pseudo_labels: true
+    pseudo_label_config: configs/pseudo_labels.yaml
+    freeze_encoder_epochs: 5
+  ssl_motion_pseudo:
+    name: E. Full Pipeline (alias)
+    description: 'Full proposed framework: SSL + Motion + Pseudo-Labels'
+    use_ssl_pretrained: true
+    ssl_checkpoint: checkpoints/ssl/ssl_encoder_best.pth
+    use_motion: true
+    motion_checkpoint: checkpoints/motion/motion_model_best.pth
+    use_pseudo_labels: true
+    pseudo_label_config: configs/pseudo_labels.yaml
+    freeze_encoder_epochs: 5
+loss:
+  dice_weight: 1.0
+  ce_weight: 1.0
+  motion_weight: 0.1
+  pseudo_weight: 0.25
+  include_background: false
+optimization:
+  optimizer: adamw
+  lr_decoder: 0.0001
+  lr_encoder: 1.0e-05
+  weight_decay: 1.0e-05
+  scheduler: cosine
+  epochs: 200
+  early_stopping_patience: 30
+  batch_size: 8
+  mixed_precision: true
+robustness:
+  seeds:
+  - 42
+  - 123
+  - 456
+  noise_levels:
+  - 0.0
+  - 0.05
+  - 0.1
+  intensity_scalings:
+  - 0.9
+  - 1.0
+  - 1.1
+  temporal_intervals:
+  - 1
+  - 2
+logging:
+  checkpoint_dir: checkpoints/experiments
+  results_dir: results/hd95_audit_medpy
+  tables_dir: results/tables
+  metrics_dir: results/metrics
+  figures_dir: results/figures
+  registry_file: results/experiments/experiment_registry.json

@@ -53,5 +53,906 @@
       "loss_total": 2.283754587173462
     },
     "last_updated": "2026-09-05 23:40:55"
+  },
+  "full_pipeline_10pct_seed42_smoke": {
+    "run_id": "full_pipeline_10pct_seed42_smoke",
+    "mode": "full_pipeline",
+    "label_fraction": 10,
+    "seed": 42,
+    "device": "cpu",
+    "train_patients": [
+      "patient001",
+      "patient006",
+      "patient017",
+      "patient027",
+      "patient034",
+      "patient070",
+      "patient078"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/10pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "smoke_test_passed",
+    "best_metric": 0.03511428577056275,
+    "best_epoch": 1,
+    "history_file": "checkpoints/experiments/full_pipeline_10pct_seed42_smoke/full_pipeline_10pct_seed42_smoke_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 5.118560552597046,
+      "last_train_samples_per_second": 0.3907348520054615,
+      "peak_vram_mb": 0.0,
+      "peak_ram_mb": 2631.86328125,
+      "latest_checkpoint_mb": 13.845372200012207
+    },
+    "last_updated": "2026-09-23 21:34:29"
+  },
+  "full_pipeline_10pct_seed42": {
+    "run_id": "full_pipeline_10pct_seed42",
+    "mode": "full_pipeline",
+    "label_fraction": 10,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient006",
+      "patient017",
+      "patient027",
+      "patient034",
+      "patient070",
+      "patient078"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/10pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.709147527880641,
+    "best_epoch": 140,
+    "history_file": "checkpoints/experiments/full_pipeline_10pct_seed42/full_pipeline_10pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 11.021093845367432,
+      "last_train_samples_per_second": 11.614092194106766,
+      "peak_vram_mb": 3533.68408203125,
+      "peak_ram_mb": 3127.2734375,
+      "latest_checkpoint_mb": 23.161181449890137
+    },
+    "last_updated": "2026-09-24 09:46:39"
+  },
+  "full_pipeline_25pct_seed42": {
+    "run_id": "full_pipeline_25pct_seed42",
+    "mode": "full_pipeline",
+    "label_fraction": 25,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient006",
+      "patient009",
+      "patient014",
+      "patient017",
+      "patient019",
+      "patient027",
+      "patient034",
+      "patient045",
+      "patient046",
+      "patient050",
+      "patient065",
+      "patient070",
+      "patient078",
+      "patient085",
+      "patient089",
+      "patient097"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/25pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.7522882484350188,
+    "best_epoch": 134,
+    "history_file": "checkpoints/experiments/full_pipeline_25pct_seed42/full_pipeline_25pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 22.25524878501892,
+      "last_train_samples_per_second": 14.288764105574103,
+      "peak_vram_mb": 3533.68408203125,
+      "peak_ram_mb": 3580.20703125,
+      "latest_checkpoint_mb": 23.160082817077637
+    },
+    "last_updated": "2026-09-24 11:38:44"
+  },
+  "full_pipeline_50pct_seed42": {
+    "run_id": "full_pipeline_50pct_seed42",
+    "mode": "full_pipeline",
+    "label_fraction": 50,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient006",
+      "patient009",
+      "patient012",
+      "patient014",
+      "patient017",
+      "patient019",
+      "patient020",
+      "patient025",
+      "patient027",
+      "patient028",
+      "patient034",
+      "patient037",
+      "patient041",
+      "patient045",
+      "patient046",
+      "patient050",
+      "patient051",
+      "patient052",
+      "patient055",
+      "patient056",
+      "patient057",
+      "patient061",
+      "patient064",
+      "patient065",
+      "patient067",
+      "patient068",
+      "patient070",
+      "patient076",
+      "patient078",
+      "patient081",
+      "patient082",
+      "patient085",
+      "patient089",
+      "patient097"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/50pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.7848766769774189,
+    "best_epoch": 94,
+    "history_file": "checkpoints/experiments/full_pipeline_50pct_seed42/full_pipeline_50pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 44.34039831161499,
+      "last_train_samples_per_second": 14.88484598991779,
+      "peak_vram_mb": 3533.68408203125,
+      "peak_ram_mb": 4367.46875,
+      "latest_checkpoint_mb": 23.156603813171387
+    },
+    "last_updated": "2026-09-24 14:39:48"
+  },
+  "full_pipeline_100pct_seed42": {
+    "run_id": "full_pipeline_100pct_seed42",
+    "mode": "full_pipeline",
+    "label_fraction": 100,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient003",
+      "patient004",
+      "patient005",
+      "patient006",
+      "patient009",
+      "patient010",
+      "patient012",
+      "patient013",
+      "patient014",
+      "patient017",
+      "patient018",
+      "patient019",
+      "patient020",
+      "patient023",
+      "patient024",
+      "patient025",
+      "patient026",
+      "patient027",
+      "patient028",
+      "patient030",
+      "patient033",
+      "patient034",
+      "patient035",
+      "patient036",
+      "patient037",
+      "patient039",
+      "patient040",
+      "patient041",
+      "patient043",
+      "patient045",
+      "patient046",
+      "patient048",
+      "patient050",
+      "patient051",
+      "patient052",
+      "patient053",
+      "patient054",
+      "patient055",
+      "patient056",
+      "patient057",
+      "patient059",
+      "patient061",
+      "patient062",
+      "patient064",
+      "patient065",
+      "patient067",
+      "patient068",
+      "patient069",
+      "patient070",
+      "patient071",
+      "patient072",
+      "patient073",
+      "patient076",
+      "patient078",
+      "patient080",
+      "patient081",
+      "patient082",
+      "patient085",
+      "patient086",
+      "patient087",
+      "patient088",
+      "patient089",
+      "patient090",
+      "patient091",
+      "patient092",
+      "patient093",
+      "patient097",
+      "patient099",
+      "patient100"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/100pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.8264425969434782,
+    "best_epoch": 123,
+    "history_file": "checkpoints/experiments/full_pipeline_100pct_seed42/full_pipeline_100pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 83.40010738372803,
+      "last_train_samples_per_second": 15.87527931958421,
+      "peak_vram_mb": 3533.68408203125,
+      "peak_ram_mb": 6198.15625,
+      "latest_checkpoint_mb": 23.159372329711914
+    },
+    "last_updated": "2026-09-24 20:05:29"
+  },
+  "ssl_finetune_100pct_seed42": {
+    "run_id": "ssl_finetune_100pct_seed42",
+    "mode": "ssl_finetune",
+    "label_fraction": 100,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient003",
+      "patient004",
+      "patient005",
+      "patient006",
+      "patient009",
+      "patient010",
+      "patient012",
+      "patient013",
+      "patient014",
+      "patient017",
+      "patient018",
+      "patient019",
+      "patient020",
+      "patient023",
+      "patient024",
+      "patient025",
+      "patient026",
+      "patient027",
+      "patient028",
+      "patient030",
+      "patient033",
+      "patient034",
+      "patient035",
+      "patient036",
+      "patient037",
+      "patient039",
+      "patient040",
+      "patient041",
+      "patient043",
+      "patient045",
+      "patient046",
+      "patient048",
+      "patient050",
+      "patient051",
+      "patient052",
+      "patient053",
+      "patient054",
+      "patient055",
+      "patient056",
+      "patient057",
+      "patient059",
+      "patient061",
+      "patient062",
+      "patient064",
+      "patient065",
+      "patient067",
+      "patient068",
+      "patient069",
+      "patient070",
+      "patient071",
+      "patient072",
+      "patient073",
+      "patient076",
+      "patient078",
+      "patient080",
+      "patient081",
+      "patient082",
+      "patient085",
+      "patient086",
+      "patient087",
+      "patient088",
+      "patient089",
+      "patient090",
+      "patient091",
+      "patient092",
+      "patient093",
+      "patient097",
+      "patient099",
+      "patient100"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": null,
+    "uses_pseudo_labels": false,
+    "pseudo_label_source": null,
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.8208240308884991,
+    "best_epoch": 80,
+    "history_file": "checkpoints/experiments/ssl_finetune_100pct_seed42/ssl_finetune_100pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 25.817194938659668,
+      "last_train_samples_per_second": 51.28365041770635,
+      "peak_vram_mb": 1010.13134765625,
+      "peak_ram_mb": 2607.1796875,
+      "latest_checkpoint_mb": 23.155688285827637
+    },
+    "last_updated": "2026-10-12 22:20:43",
+    "validation_audit": {
+      "source_file": "results/validation/ssl_finetune_100pct_seed42_patient_audit.json",
+      "split": "validation",
+      "n_patients": 10,
+      "n_slices": 180,
+      "patient_level_mean": {
+        "LV_Dice": 0.8715356302787413,
+        "Myocardium_Dice": 0.8161841291897318,
+        "RV_Dice": 0.7746615902022314,
+        "Mean_Dice": 0.8207937832235681
+      },
+      "patient_level_std": {
+        "LV_Dice": 0.06198231153592704,
+        "Myocardium_Dice": 0.03845090677766213,
+        "RV_Dice": 0.0921237950454336,
+        "Mean_Dice": 0.041282219381722156
+      }
+    }
+  },
+  "ssl_motion_100pct_seed42": {
+    "run_id": "ssl_motion_100pct_seed42",
+    "mode": "ssl_motion",
+    "label_fraction": 100,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient003",
+      "patient004",
+      "patient005",
+      "patient006",
+      "patient009",
+      "patient010",
+      "patient012",
+      "patient013",
+      "patient014",
+      "patient017",
+      "patient018",
+      "patient019",
+      "patient020",
+      "patient023",
+      "patient024",
+      "patient025",
+      "patient026",
+      "patient027",
+      "patient028",
+      "patient030",
+      "patient033",
+      "patient034",
+      "patient035",
+      "patient036",
+      "patient037",
+      "patient039",
+      "patient040",
+      "patient041",
+      "patient043",
+      "patient045",
+      "patient046",
+      "patient048",
+      "patient050",
+      "patient051",
+      "patient052",
+      "patient053",
+      "patient054",
+      "patient055",
+      "patient056",
+      "patient057",
+      "patient059",
+      "patient061",
+      "patient062",
+      "patient064",
+      "patient065",
+      "patient067",
+      "patient068",
+      "patient069",
+      "patient070",
+      "patient071",
+      "patient072",
+      "patient073",
+      "patient076",
+      "patient078",
+      "patient080",
+      "patient081",
+      "patient082",
+      "patient085",
+      "patient086",
+      "patient087",
+      "patient088",
+      "patient089",
+      "patient090",
+      "patient091",
+      "patient092",
+      "patient093",
+      "patient097",
+      "patient099",
+      "patient100"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": "checkpoints/motion/motion_model_best.pth",
+    "uses_pseudo_labels": false,
+    "pseudo_label_source": null,
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.8118113249886308,
+    "best_epoch": 55,
+    "history_file": "checkpoints/experiments/ssl_motion_100pct_seed42/ssl_motion_100pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 63.35323405265808,
+      "last_train_samples_per_second": 20.898696330159165,
+      "peak_vram_mb": 2709.658203125,
+      "peak_ram_mb": 2726.296875,
+      "latest_checkpoint_mb": 23.153019905090332
+    },
+    "last_updated": "2026-10-13 06:52:28",
+    "validation_audit": {
+      "source_file": "results/validation/ssl_motion_100pct_seed42_patient_audit.json",
+      "split": "validation",
+      "n_patients": 10,
+      "n_slices": 180,
+      "patient_level_mean": {
+        "LV_Dice": 0.8741899882703258,
+        "Myocardium_Dice": 0.8029119946202623,
+        "RV_Dice": 0.7639168265543679,
+        "Mean_Dice": 0.813672936481652
+      },
+      "patient_level_std": {
+        "LV_Dice": 0.05833326120781094,
+        "Myocardium_Dice": 0.03712256773245482,
+        "RV_Dice": 0.09546952044291901,
+        "Mean_Dice": 0.0401246972062196
+      }
+    }
+  },
+  "ssl_pseudo_100pct_seed42": {
+    "run_id": "ssl_pseudo_100pct_seed42",
+    "mode": "ssl_pseudo",
+    "label_fraction": 100,
+    "seed": 42,
+    "device": "cuda",
+    "train_patients": [
+      "patient001",
+      "patient003",
+      "patient004",
+      "patient005",
+      "patient006",
+      "patient009",
+      "patient010",
+      "patient012",
+      "patient013",
+      "patient014",
+      "patient017",
+      "patient018",
+      "patient019",
+      "patient020",
+      "patient023",
+      "patient024",
+      "patient025",
+      "patient026",
+      "patient027",
+      "patient028",
+      "patient030",
+      "patient033",
+      "patient034",
+      "patient035",
+      "patient036",
+      "patient037",
+      "patient039",
+      "patient040",
+      "patient041",
+      "patient043",
+      "patient045",
+      "patient046",
+      "patient048",
+      "patient050",
+      "patient051",
+      "patient052",
+      "patient053",
+      "patient054",
+      "patient055",
+      "patient056",
+      "patient057",
+      "patient059",
+      "patient061",
+      "patient062",
+      "patient064",
+      "patient065",
+      "patient067",
+      "patient068",
+      "patient069",
+      "patient070",
+      "patient071",
+      "patient072",
+      "patient073",
+      "patient076",
+      "patient078",
+      "patient080",
+      "patient081",
+      "patient082",
+      "patient085",
+      "patient086",
+      "patient087",
+      "patient088",
+      "patient089",
+      "patient090",
+      "patient091",
+      "patient092",
+      "patient093",
+      "patient097",
+      "patient099",
+      "patient100"
+    ],
+    "validation_patients": [
+      "patient002",
+      "patient016",
+      "patient029",
+      "patient031",
+      "patient042",
+      "patient060",
+      "patient066",
+      "patient079",
+      "patient083",
+      "patient098"
+    ],
+    "ssl_checkpoint": "checkpoints/ssl/ssl_encoder_best.pth",
+    "motion_checkpoint": null,
+    "uses_pseudo_labels": true,
+    "pseudo_label_source": "results/pseudo_labels/100pct",
+    "robustness": {
+      "status": "not_run",
+      "config": {
+        "seeds": [
+          42,
+          123,
+          456
+        ],
+        "noise_levels": [
+          0.0,
+          0.05,
+          0.1
+        ],
+        "intensity_scalings": [
+          0.9,
+          1.0,
+          1.1
+        ],
+        "temporal_intervals": [
+          1,
+          2
+        ]
+      }
+    },
+    "parameters": 2012580,
+    "status": "complete",
+    "best_metric": 0.824093393895353,
+    "best_epoch": 96,
+    "history_file": "checkpoints/experiments/ssl_pseudo_100pct_seed42/ssl_pseudo_100pct_seed42_history.json",
+    "benchmark": {
+      "last_epoch_seconds": 43.40181803703308,
+      "last_train_samples_per_second": 30.505634553609767,
+      "peak_vram_mb": 1859.4111328125,
+      "peak_ram_mb": 2649.625,
+      "latest_checkpoint_mb": 23.157109260559082
+    },
+    "last_updated": "2026-10-13 11:11:45",
+    "validation_audit": {
+      "source_file": "results/validation/ssl_pseudo_100pct_seed42_patient_audit.json",
+      "split": "validation",
+      "n_patients": 10,
+      "n_slices": 180,
+      "patient_level_mean": {
+        "LV_Dice": 0.8757180521025466,
+        "Myocardium_Dice": 0.820382180032268,
+        "RV_Dice": 0.7762987998296896,
+        "Mean_Dice": 0.8241330106548348
+      },
+      "patient_level_std": {
+        "LV_Dice": 0.058314003819180525,
+        "LV_HD95": 1.4719054316926259,
+        "Myocardium_Dice": 0.03130669211981336,
+        "Myocardium_HD95": 1.6954094896745542,
+        "RV_Dice": 0.07340507876901758,
+        "RV_HD95": 6.361192237085107,
+        "Mean_Dice": 0.03296657169435293,
+        "Mean_HD95": 1.9478545845207478
+      },
+      "Mean_HD95_mm": 3.846266709096549
+    }
   }
 }
