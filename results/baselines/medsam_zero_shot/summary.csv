@@ -1,0 +1,19 @@
+Metric,Value
+Model,MedSAM ViT-B
+Experiment,Zero-shot; no ACDC fine-tuning
+Checkpoint,/kaggle/working/checkpoints/medsam/medsam_vit_b.pth
+Split,Locked test cohort
+Test patients,20
+Test slices,398
+Partial run,False
+LV Dice,0.17514807741536692
+Myocardium Dice,0.24918057049915757
+RV Dice,0.11274700814320171
+Mean Dice,0.17902521868590876
+LV HD95 (mm),28.84263707833756
+Myocardium HD95 (mm),31.778105124637513
+RV HD95 (mm),55.74294693830482
+Mean HD95 (mm),37.642668915323625
+Mean Dice SD,0.09953534289968591
+Mean HD95 SD (mm),13.632657101285231
+HD95 implementation,Fallback; medpy unavailable in original run
